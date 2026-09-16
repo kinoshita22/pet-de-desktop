@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "_comment": "Progressao de nivel, valores iniciais dos atributos e limiares de vinculo. Fonte: MVP_SPEC.md secoes 9, 11 e 14. Nenhum destes numeros pode ser fixado no codigo.",
+
+  "max_level": 5,
+
+  "initial_attributes": {
+    "energy": 70,
+    "max_energy": 100,
+    "strength": 0,
+    "bond": 0
+  },
+
+  "strength_levels": [
+    {
+      "level": 1,
+      "required_strength": 0,
+      "description": "Alimentacao, descanso, flexoes e acoes ociosas",
+      "unlocks": ["basic_actions", "push_ups"]
+    },
+    {
+      "level": 2,
+      "required_strength": 25,
+      "description": "Nova animacao de comemoracao",
+      "unlocks": ["level_2_celebration"]
+    },
+    {
+      "level": 3,
+      "required_strength": 70,
+      "description": "Halteres",
+      "unlocks": ["dumbbells"]
+    },
+    {
+      "level": 4,
+      "required_strength": 140,
+      "description": "Forma musculosa",
+      "unlocks": ["muscular_form"]
+    },
+    {
+      "level": 5,
+      "required_strength": 250,
+      "description": "Pose final e efeito visual de conquista",
+      "unlocks": ["final_pose", "final_achievement_effect"]
+    }
+  ],
+
+  "bond_behaviors": [
+    { "id": "petting_reaction", "required_bond": 10, "display_name": "Reacao ao carinho" },
+    { "id": "startup_celebration", "required_bond": 25, "display_name": "Comemoracao especial ao iniciar o jogo" },
+    { "id": "rare_affection_idle", "required_bond": 50, "display_name": "Animacao afetiva rara durante a ociosidade" }
+  ]
+}

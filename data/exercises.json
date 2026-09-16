@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "_comment": "Exercicios do MVP. Fonte: MVP_SPEC.md secao 13. 'unlock_id' aponta para um desbloqueio de levels.json; o carregador exige que o nivel desse desbloqueio seja igual a 'required_level'.",
+
+  "exercises": [
+    {
+      "id": "push_ups",
+      "display_name": "Flexoes",
+      "energy_cost": 15,
+      "duration_seconds": 20,
+      "strength_gain": 5,
+      "required_level": 1,
+      "unlock_id": "push_ups",
+      "training_point": "TrainingPoint",
+      "comic_reaction_chance": 0.10
+    },
+    {
+      "id": "dumbbells",
+      "display_name": "Halteres",
+      "energy_cost": 25,
+      "duration_seconds": 30,
+      "strength_gain": 9,
+      "required_level": 3,
+      "unlock_id": "dumbbells",
+      "training_point": "TrainingPoint",
+      "comic_reaction_chance": 0.10
+    }
+  ]
+}

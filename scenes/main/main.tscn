@@ -1,11 +1,15 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
-[ext_resource type="PackedScene" path="res://scenes/environment/backyard.tscn" id="1_backyard"]
+[ext_resource type="Script" path="res://scripts/systems/game_session.gd" id="1_session"]
+[ext_resource type="PackedScene" path="res://scenes/environment/backyard.tscn" id="2_backyard"]
 
 [node name="Main" type="Node"]
 
+[node name="GameSession" type="Node" parent="."]
+script = ExtResource("1_session")
+
 [node name="World" type="Node2D" parent="."]
 
-[node name="Backyard" parent="World" instance=ExtResource("1_backyard")]
+[node name="Backyard" parent="World" instance=ExtResource("2_backyard")]
 
 [node name="Interface" type="CanvasLayer" parent="."]

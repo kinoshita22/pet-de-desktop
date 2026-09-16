@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 4 de 12 — Controlador de Caramelo.** O quintal tem um cachorro: ele fica ocioso, escolhe destinos, caminha até eles e descansa, sempre dentro da área caminhável. A máquina de estados completa já existe. **Ainda não há jogabilidade:** sem atributos, sem progressão, sem alimentação ou treino de verdade e sem interface.
+**Etapa 5 de 12 — Atributos e progressão.** Existe o modelo de dados de energia, força, vínculo e nível, com os cinco níveis, os desbloqueios e o carregamento validado dos três JSON de balanceamento. **Ainda não há jogabilidade:** nada alimenta o modelo — comer, treinar e o carinho continuam sem efeito, e não há interface nem salvamento.
 
 ## Requisitos
 
@@ -249,10 +249,202 @@ static func state_name(state: int) -> String
 
 **Não há `Timer`.** Os cronômetros de estado e de decisão são contadores internos avançados por `simulate`, porque nós `Timer` seguem o relógio do motor e não poderiam ser adiantados de forma determinística — o que inviabilizaria metade dos testes obrigatórios. Os papéis de `StateTimer` e `DecisionTimer` continuam existindo, como campos.
 
+## Atributos e progressão
+
+O modelo de dados existe e é testável, mas **nada ainda o alimenta**: comer, treinar e o carinho continuam sem efeito. Esta etapa entrega só o modelo, os dados e os sinais.
+
+### Organização de `data/`
+
+A divergência registrada na Etapa 2 está resolvida: `MVP_SPEC.md` §14 nomeia **arquivos**, não diretórios, e é ele que prevalece. Os diretórios vazios `data/foods/`, `data/exercises/` e `data/levels/` foram removidos junto com seus `.gitkeep`.
+
+```text
+data/
+├── levels.json      progressão de nível, valores iniciais e limiares de vínculo
+├── foods.json       os três alimentos
+└── exercises.json   os dois exercícios
+```
+
+Nenhum número de balanceamento vive no código. O `MVP_SPEC.md` §14 é explícito: *"Nenhum valor de balanceamento — custo, duração, recompensa, limiar ou recarga — pode ser fixado diretamente no código."* Por isso até os **valores iniciais dos atributos** vêm de `levels.json`, e não de constantes.
+
+### Esquema de `levels.json`
+
+```jsonc
+{
+  "schema_version": 1,
+  "max_level": 5,
+  "initial_attributes": { "energy": 70, "max_energy": 100, "strength": 0, "bond": 0 },
+  "strength_levels": [
+    { "level": 1, "required_strength": 0, "description": "...", "unlocks": ["basic_actions", "push_ups"] }
+  ],
+  "bond_behaviors": [
+    { "id": "petting_reaction", "required_bond": 10, "display_name": "..." }
+  ]
+}
+```
+
+Três seções claramente separadas: a tabela de força, os limiares de vínculo e os valores iniciais. `max_level` precisa bater com o tamanho da tabela — o carregador recusa se divergirem.
+
+| Nível | Força | Desbloqueios |
+| ----: | ----: | ------------ |
+| 1 | 0 | `basic_actions`, `push_ups` |
+| 2 | 25 | `level_2_celebration` |
+| 3 | 70 | `dumbbells` |
+| 4 | 140 | `muscular_form` |
+| 5 | 250 | `final_pose`, `final_achievement_effect` |
+
+| Vínculo | Comportamento |
+| ------: | ------------- |
+| 10 | `petting_reaction` — reação ao carinho |
+| 25 | `startup_celebration` — comemoração especial ao iniciar |
+| 50 | `rare_affection_idle` — animação afetiva rara |
+
+Desbloqueios de nível e comportamentos de vínculo compartilham **um único espaço de identificadores**, e o carregador recusa colisões entre eles. Nenhum desses desbloqueios foi implementado visualmente; esta etapa só disponibiliza a consulta.
+
+### Esquema de `foods.json`
+
+```jsonc
+{ "id": "kibble", "display_name": "Racao", "energy": 20, "bond": 1,
+  "cooldown_seconds": 300, "animation_seconds": 4.0 }
+```
+
+| ID | Energia | Vínculo | Recarga |
+| -- | ------: | ------: | ------: |
+| `kibble` | +20 | +1 | 300 s |
+| `chicken_rice` | +35 | +2 | 900 s |
+| `cheese_bread` | +15 | +3 | 600 s |
+
+Os nomes de exibição são em português; os IDs são técnicos e estáveis.
+
+### Esquema de `exercises.json`
+
+```jsonc
+{ "id": "push_ups", "display_name": "Flexoes", "energy_cost": 15, "duration_seconds": 20,
+  "strength_gain": 5, "required_level": 1, "unlock_id": "push_ups",
+  "training_point": "TrainingPoint", "comic_reaction_chance": 0.10 }
+```
+
+| ID | Energia | Duração | Força | Nível |
+| -- | ------: | ------: | ----: | ----: |
+| `push_ups` | 15 | 20 s | +5 | 1 |
+| `dumbbells` | 25 | 30 s | +9 | 3 |
+
+`unlock_id` e `required_level` são redundantes de propósito: o carregador exige que o desbloqueio exista em `levels.json` **e** que o nível em que ele aparece seja exatamente `required_level`. É essa redundância que torna a relação entre os arquivos verificável.
+
+### Carregador de configuração
+
+[`scripts/systems/game_config.gd`](scripts/systems/game_config.gd) lê e valida os três arquivos.
+
+Ele verifica existência, sintaxe do JSON, a raiz do arquivo, presença de cada campo obrigatório, tipos, faixas e as relações entre os arquivos. Números de JSON chegam como `float` no Godot, então inteiros são aceitos só quando exatos.
+
+**Um arquivo que existe mas está errado nunca é corrigido em silêncio nem substituído por padrões.** A configuração inteira é marcada inválida, `errors` descreve cada problema com arquivo e campo, e os acessores devolvem vazio — os dados só ficam visíveis depois que tudo passa. `GameSession` despeja cada erro com `push_error` e dispara um `assert`, para que a falha apareça durante o desenvolvimento em vez de virar comportamento estranho de jogo.
+
+Exemplos de mensagem:
+
+```text
+levels.json/strength_levels[2]: limiar de forca 25 duplicado.
+exercises.json/exercises[0]: 'dumbbells' e concedido no nivel 3, mas 'required_level' diz 1.
+foods.json/foods[0]: 'energy' deve ser numero inteiro, veio String.
+```
+
+Não há download, atualização remota nem recarga em tempo de execução.
+
+### Modelo de progressão
+
+[`scripts/systems/progression_model.gd`](scripts/systems/progression_model.gd) não conhece cena, interface nem personagem — recebe um `GameConfig` e responde a chamadas. Roda inteiro sem abrir cena alguma.
+
+Valores iniciais: `energy` 70, `max_energy` 100, `strength` 0, `bond` 0, `level` 1.
+
+| Atributo | Regras |
+| -------- | ------ |
+| `energy` | Nunca abaixo de 0 nem acima de `max_energy`. A recuperação aplica clamp e informa quanto foi de fato aplicado. O gasto é **atômico**: sem saldo, nada muda. Custo zero ou negativo é recusado. |
+| `strength` | Começa em 0 e **nunca diminui**. Ganho zero ou negativo é recusado. Não tem teto no modelo, embora o nível pare em 5. Cruzar vários limiares de uma vez funciona. |
+| `bond` | Começa em 0, **nunca diminui**, sem teto. Ganho zero ou negativo é recusado. Libera só comportamentos afetivos — nunca bônus de força, energia ou velocidade. |
+| `level` | **Derivado de `strength`, sempre.** Não existe campo `level` nem `set_level()`: não há segunda fonte de verdade capaz de divergir. Entre 1 e 5, nunca regride. |
+
+#### API
+
+```gdscript
+func get_energy() -> int
+func get_max_energy() -> int
+func get_strength() -> int
+func get_bond() -> int
+func get_level() -> int                    # sempre derivado da força
+
+func try_spend_energy(amount: int) -> bool # true só quando o gasto acontece; atômico
+func restore_energy(amount: int) -> int    # devolve a energia EFETIVAMENTE restaurada
+func add_strength(amount: int) -> int      # devolve o NOVO TOTAL de força
+func add_bond(amount: int) -> int          # devolve o NOVO TOTAL de vínculo
+
+func has_unlock(unlock_id: StringName) -> bool
+func is_exercise_unlocked(exercise_id: StringName) -> bool
+func get_unlocks() -> PackedStringArray
+func get_unlocked_bond_behaviors() -> PackedStringArray
+func get_snapshot() -> Dictionary          # cópia; alterá-la não afeta o modelo
+func get_config() -> GameConfig
+```
+
+Nenhuma propriedade mutável é pública. `get_snapshot()` devolve cópia nova a cada chamada. `is_exercise_unlocked()` devolve `false` para identificador desconhecido — não há aceite silencioso.
+
+#### Sinais e sua ordem
+
+```gdscript
+signal energy_changed(previous_value: int, new_value: int)
+signal strength_changed(previous_value: int, new_value: int)
+signal bond_changed(previous_value: int, new_value: int)
+signal level_changed(previous_level: int, new_level: int)
+signal unlock_granted(unlock_id: StringName)
+```
+
+A ordem é fixa e vale para toda operação:
+
+```text
+add_strength     →  strength_changed  →  level_changed  →  unlock_granted (1..N)
+add_bond         →  bond_changed      →  unlock_granted (1..N)
+restore_energy   →  energy_changed
+try_spend_energy →  energy_changed
+```
+
+O atributo muda primeiro; as consequências derivadas vêm depois, do mais geral (nível) para o mais específico (cada desbloqueio). Os desbloqueios saem em ordem crescente de nível — ou de vínculo exigido — e, dentro do mesmo nível, na ordem do arquivo de dados.
+
+Regras de emissão:
+
+* Só emite quando o valor **realmente muda**. Recuperar energia já cheia devolve 0 e não emite nada.
+* Operação recusada não emite sinal algum.
+* Cada desbloqueio é emitido **uma única vez**. Cruzar vários níveis numa operação emite todos os intermediários, nenhum perdido.
+* Consultar valores nunca emite sinal.
+
+### `GameSession`
+
+[`scripts/systems/game_session.gd`](scripts/systems/game_session.gd) é um `Node` na cena principal, o primeiro filho de `Main`:
+
+```text
+Main                    (Node)
+├── GameSession         (Node)        ← carrega a configuração, possui o modelo
+├── World               (Node2D)
+│   └── Backyard        (instância de backyard.tscn)
+└── Interface           (CanvasLayer, vazia)
+```
+
+Ela carrega a configuração **uma única vez por sessão**, cria e possui a instância do modelo e entra no grupo `game_session`. Quem precisar dela usa `GameSession.find_in(tree)`, nunca um caminho como `../../`.
+
+**Não é Autoload** porque um Autoload seria estado global vivo também no editor e em cenas de teste, e nada aqui precisa disso.
+
+### Separação entre o modelo e Caramelo
+
+É um critério de aceitação, verificado por teste:
+
+* Caramelo **não tem** propriedades nem métodos de `energy`, `strength`, `bond` ou `level`.
+* Caramelo não conhece o modelo; o modelo não conhece a cena nem o controlador.
+* `GameSession` não toca na máquina de estados de Caramelo e não se liga aos sinais dele.
+* Nenhum estado gasta energia ou concede força ou vínculo. Rodar a cena por dois minutos deixa os valores exatamente em 70 / 0 / 0 / nível 1.
+
+O acoplamento entre atributos e comportamento só aparece na Etapa 6.
+
 ## Estrutura da cena principal
 
 ```text
 Main                    (Node)
+├── GameSession         (Node)        ← configuração e modelo de progressão
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
 │       ├── Background        (Sprite2D)     z = -100
@@ -268,6 +460,8 @@ Main                    (Node)
 │       └── ForegroundLayer   (Node2D)       z = 20
 └── Interface           (CanvasLayer, camada 1, vazia)
 ```
+
+`GameSession` é o primeiro filho de `Main`, antes de `World`: ela carrega a configuração no `_ready` e o resto da cena pode contar com o modelo já pronto.
 
 O `ColorRect` provisório da Etapa 2 foi removido da cena principal depois que o fundo definitivo foi validado. O papel conceitual de `Background` passou para dentro de `backyard.tscn`, junto com o resto do cenário — manter um segundo fundo em `main.tscn` duplicaria a responsabilidade sem nenhum ganho.
 
@@ -314,15 +508,38 @@ godot --headless --path . --quit-after 120
 
 ## Como executar os testes
 
-Os testes são permanentes, rodam sem janela e não dependem de nenhum framework externo:
+São duas suítes permanentes, ambas sem janela e sem nenhum framework externo. Cada uma sai com código `0` quando tudo passa e `1` caso contrário, imprimindo cada verificação.
 
 ```bash
+# controlador de Caramelo — 69 verificações
 godot --headless --path . --script tests/test_caramelo_controller.gd
+
+# configuração, atributos e progressão — 187 verificações
+godot --headless --path . --script tests/test_progression.gd
 ```
 
-Saem com código `0` quando tudo passa e `1` na primeira falha, imprimindo cada verificação. São **69 verificações** cobrindo estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
+**`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
 
-O tempo nunca é esperado de verdade: a suíte chama `Caramelo.simulate(delta)` em laço, de modo que dez minutos de jogo passam em milissegundos e o resultado é determinístico.
+**`test_progression.gd`** cobre a existência e validade dos três JSON, campos obrigatórios, unicidade de IDs, limiares crescentes, relações entre arquivos, **22 formas diferentes de configuração inválida**, os limites e a atomicidade da energia, os cinco níveis, os desbloqueios de vínculo, valores e ordem dos sinais, a posse do modelo pela `GameSession`, o desacoplamento entre Caramelo e o modelo, e a aritmética da progressão.
+
+Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
+
+O tempo nunca é esperado de verdade: as suítes chamam `Caramelo.simulate(delta)` em laço, de modo que dez minutos de jogo passam em milissegundos e o resultado é determinístico.
+
+### Aritmética verificada
+
+A suíte de progressão confirma os números do `MVP_SPEC.md` §13 executando o modelo de verdade:
+
+| Verificação | Resultado |
+| ----------- | --------- |
+| Sair do nível 1 só com flexões | 5 sessões, 25 de força, 75 de energia |
+| Chegar ao nível 3 só com flexões | 14 sessões, 70 de força, 210 de energia |
+| Halteres disponíveis | exatamente ao alcançar o nível 3 |
+| Nível 5 só com flexões | 50 sessões, 750 de energia |
+| Nenhuma sessão sobe dois níveis | maior ganho (+9) < menor intervalo (25), varrido para força 0–259 |
+| Nível 5 exige | força total 250 |
+| Nível máximo após continuar treinando | permanece 5 |
+| Caminho recomendado completo | 35 sessões e 735 de energia |
 
 O esperado é uma janela preenchida de ponta a ponta pelo quintal ao entardecer, sem barras vazias e sem deformação. Ao arrastar a borda da janela, a imagem continua cobrindo tudo: em janelas mais largas que 16:9 ela é recortada em cima e embaixo, e em janelas mais altas, nas laterais.
 
@@ -362,14 +579,14 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scenes/dog/caramelo.tscn`: a cena do cachorro, com a silhueta provisória em `Polygon2D` e a cápsula de colisão.
-* `scripts/dog/caramelo.gd`: o controlador — máquina de estados, movimento dentro do polígono, decisões autônomas e API pública.
-* `scripts/dog/caramelo_visual.gd`: as poses, separadas da lógica.
-* `tests/test_caramelo_controller.gd`: 69 verificações permanentes, headless e determinísticas.
-* `scenes/environment/backyard.tscn`: instancia Caramelo em `CharacterLayer` e liga `y_sort_enabled` na camada.
-* `scripts/environment/backyard.gd`: passa a entregar aos personagens a área caminhável e os três pontos, convertidos para o espaço de `CharacterLayer`. O enquadramento da Etapa 3 não foi tocado.
+* `data/levels.json`, `data/foods.json`, `data/exercises.json`: a fonte única de todo o balanceamento. Os diretórios vazios `data/foods/`, `data/exercises/` e `data/levels/` foram removidos.
+* `scripts/systems/game_config.gd`: carregador com validação estrita dos três arquivos e das relações entre eles.
+* `scripts/systems/progression_model.gd`: o modelo de atributos, nível derivado, desbloqueios e sinais.
+* `scripts/systems/game_session.gd`: o nó que carrega a configuração uma vez e possui o modelo.
+* `tests/test_progression.gd`: 187 verificações permanentes, incluindo 22 formas de configuração inválida.
+* `scenes/main/main.tscn`: ganhou `GameSession` como primeiro filho de `Main`.
 
-`scenes/main/main.tscn` não mudou: Caramelo entra pelo quintal, não pela cena principal.
+Caramelo **não foi alterado**: a cena, o controlador e o visual estão exatamente como na Etapa 4.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -389,7 +606,17 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **O desvio de trajeto tem uma perna só.** Se nem a linha reta nem a rota pelo ponto interno servirem, o destino é recusado. Basta para este quintal, que é quase convexo (0,4% dos trajetos precisam do desvio), mas um cenário mais recortado exigiria outra solução.
 * **Caramelo não desvia de objetos.** O `CharacterBody2D` tem cápsula de colisão e `velocity`, mas a posição é integrada diretamente em vez de `move_and_slide()` — não existe nada com que colidir, e `move_and_slide()` usaria o delta do motor, o que quebraria a simulação determinística dos testes. Quando a Etapa 6 trouxer objetos com corpo, a troca é de uma linha.
 * **`EATING`, `TRAINING` e `HAPPY` não são jogabilidade.** Rodam o comportamento visual, respeitam as regras de interrupção e terminam sozinhos. Não concedem nada, porque não há atributos.
-* **Um único `TrainingPoint`.** Segue valendo a limitação da Etapa 3: a arte tem dois conjuntos de treino e Caramelo só conhece o da esquerda.
+* **Um único `TrainingPoint`.** Segue valendo a limitação da Etapa 3: a arte tem dois conjuntos de treino e Caramelo só conhece o da esquerda. Os dois exercícios apontam para o mesmo `training_point` em `exercises.json`.
+
+### Atributos e progressão
+
+* **Nada alimenta o modelo.** Ele é criado com os valores iniciais e fica parado ali: comer, treinar e o carinho continuam sem efeito, e nenhum estado de Caramelo gasta energia ou concede força. A ligação vem na Etapa 6.
+* **Nada é salvo.** Fechar o jogo descarta os valores; não há persistência nem progresso offline.
+* **Os desbloqueios não têm efeito visual.** `muscular_form`, `final_pose`, `level_2_celebration` e os três comportamentos de vínculo existem só como consulta.
+* **Sem recarga de alimento em funcionamento.** `cooldown_seconds` está nos dados, mas nenhum contador corre.
+* **A configuração é lida só na abertura.** Editar um JSON com o jogo rodando não muda nada; é preciso reabrir. Não há recarga em tempo de execução, por decisão de escopo.
+* **`max_energy` é fixo em 100.** Vem dos dados, mas nada no MVP o altera.
+* **Valores provisórios.** As recargas dos alimentos e a chance de reação cômica seguem pendentes de playtest (pontos em aberto A-2 do `MVP_SPEC.md`).
 
 ## Estrutura de diretórios
 
@@ -415,12 +642,11 @@ Nada de jogabilidade existe. Em particular, seguem pendentes:
 * Os cinco comportamentos ociosos do `MVP_SPEC.md` §9 (sentar, alongar, farejar, perseguir mosca). Esta etapa entrega apenas ocioso, caminhada e descanso.
 * Carinho e os comportamentos afetivos por vínculo.
 * Objetos do cenário como entidades próprias — pote, halteres e barras ainda fazem parte da imagem de fundo.
-* Atributos (`energy`, `strength`, `bond`, `level`) e progressão de níveis.
-* Alimentação, exercícios e descanso com efeito de verdade.
+* Alimentação, exercícios e descanso com efeito de verdade — o modelo existe, mas nada o aciona.
 * Interface, barras e botões.
 * Salvamento local e progresso offline.
 * Modo papel de parede, modo silencioso e redução de consumo.
 * Áudio — habilitado tecnicamente, mas nenhum som é reproduzido.
-* Arquivos JSON de balanceamento em `data/`.
+
 
 O roteiro completo está em [`PLANO_MVP.md`](PLANO_MVP.md).
