@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 5 de 12 — Atributos e progressão.** Existe o modelo de dados de energia, força, vínculo e nível, com os cinco níveis, os desbloqueios e o carregamento validado dos três JSON de balanceamento. **Ainda não há jogabilidade:** nada alimenta o modelo — comer, treinar e o carinho continuam sem efeito, e não há interface nem salvamento.
+**Etapa 6 de 12 — Sistema de alimentação.** O primeiro ciclo funcional está de pé: clicar no pote abre um menu com os três alimentos, Caramelo caminha até o pote, come, e só então ganha energia e vínculo — com recarga própria por alimento. **Treino, carinho, HUD, salvamento e progresso offline continuam fora.**
 
 ## Requisitos
 
@@ -440,11 +440,148 @@ Ela carrega a configuração **uma única vez por sessão**, cria e possui a ins
 
 O acoplamento entre atributos e comportamento só aparece na Etapa 6.
 
+## Sistema de alimentação
+
+É o primeiro ciclo funcional do jogo: o jogador escolhe, Caramelo caminha e come, e só então os atributos mudam.
+
+### Arquitetura
+
+Cada parte segue sem conhecer as outras. O [`FeedingSystem`](scripts/systems/feeding_system.gd) é o único lugar que as liga.
+
+| Parte | Responsabilidade | O que **não** faz |
+| ----- | ---------------- | ----------------- |
+| [`FoodBowl`](scripts/environment/food_bowl.gd) | Desenhar o pote e avisar que foi selecionado | Não conhece alimento, recarga nem modelo |
+| [`FoodMenu`](scripts/ui/food_menu.gd) | Abrir/fechar, listar, mostrar recarga, encaminhar a escolha | **Nunca toca no modelo** nem aplica recompensa |
+| [`FeedingSystem`](scripts/systems/feeding_system.gd) | Aceitar ou recusar, manter uma refeição pendente, pagar na conclusão, correr as recargas | Não mexe em propriedades internas do modelo, não anima Caramelo, não grava em disco |
+| [`Caramelo`](scripts/dog/caramelo.gd) | Caminhar até `FoodPoint`, entrar em `EATING`, avisar a conclusão | **Não sabe qual alimento** nem quanto ele vale; não aplica recompensa nem controla recarga |
+| [`ProgressionModel`](scripts/systems/progression_model.gd) | `restore_energy`, `add_bond`, limites e desbloqueios | Não sabe que houve uma refeição |
+
+Nenhum número de balanceamento vive no código: energia, vínculo e recarga saem de `data/foods.json`, relidos dos dados validados no momento de pagar.
+
+### Fluxo completo
+
+```text
+jogador clica no pote
+  └─ FoodBowl.selected            → FeedingSystem.bowl_selected → FoodMenu abre
+jogador escolhe um alimento
+  └─ FoodMenu → FeedingSystem.request_feeding(food_id)
+       ├─ recusa  → feeding_rejected(food_id, reason)   menu segue aberto, nada muda
+       └─ aceita  → refeição pendente registrada
+                    Caramelo.request_activity(EATING)
+                    feeding_requested(food_id)          menu fecha
+Caramelo: IDLE/RESTING/HAPPY → (IDLE) → WALKING até FoodPoint → EATING (4 s)
+  └─ ao terminar sozinho: Caramelo.activity_completed(EATING)
+       └─ FeedingSystem paga, limpa a pendência e inicia a recarga
+```
+
+O `MVP_SPEC.md` §10 separa deslocamento de atividade, e essa distinção foi preservada: aceitar um pedido **não** põe Caramelo em `EATING` — põe em `WALKING`. Ele só come ao chegar.
+
+Como a matriz não liga `RESTING` nem `HAPPY` a `WALKING`, nem `HAPPY` a `EATING`, nesses casos Caramelo primeiro se levanta ou se acalma (`→ IDLE`). É o que permite pedir uma refeição enquanto ele ainda comemora a anterior. Toda aresta percorrida continua válida.
+
+### Momento da recompensa
+
+Nada é aplicado ao pedir, ao caminhar ou ao entrar em `EATING`. **Só na conclusão natural da atividade**, e exatamente uma vez.
+
+Ordem obrigatória dos efeitos, verificada por teste:
+
+```text
+energy_changed              (do modelo, se a energia realmente mudou)
+bond_changed                (do modelo)
+unlock_granted              (do modelo, se o vínculo cruzou 10, 25 ou 50)
+feeding_completed           (do sistema)
+cooldown_changed            (do sistema)
+```
+
+Com a energia já em 100: **`energy_changed` não é emitido**, o vínculo ainda sobe, a refeição ainda conclui e a recarga ainda começa. `feeding_completed` informa o ganho **efetivo** — alimentar com 70 de energia usando frango com arroz (+35) reporta `energy_applied = 30`, não 35.
+
+A recompensa não pode ser reaplicada: a pendência é limpa antes de `feeding_completed`, então um segundo `activity_completed` encontra o sistema vazio e é ignorado. Conclusões de `TRAINING` ou `RESTING` também são ignoradas.
+
+### Recargas
+
+Independentes por alimento, com a duração vinda do JSON.
+
+* Começam **na conclusão**, nunca na solicitação.
+* Correm com o menu fechado e chegam exatamente a zero, sem ficar negativas.
+* Uma recarga não bloqueia os outros alimentos.
+* `cooldown_changed` é emitido ao começar, a cada **segundo inteiro** e ao zerar — nunca a cada quadro. Uma recarga de 300 s gera 301 sinais, não 18 000.
+
+`FeedingSystem.simulate(delta)` avança as recargas. A execução normal chama por `_process`; os testes adiantam minutos instantaneamente. **Nada sobrevive ao fechamento do aplicativo** — persistência e continuação offline são da Etapa 10.
+
+### Sinais
+
+```gdscript
+signal bowl_selected()
+signal feeding_requested(food_id: StringName)
+signal feeding_rejected(food_id: StringName, reason: int)
+signal feeding_completed(food_id: StringName, energy_applied: int, bond_applied: int)
+signal cooldown_changed(food_id: StringName, remaining_seconds: float)
+```
+
+E em Caramelo:
+
+```gdscript
+signal activity_completed(activity: int)
+```
+
+Emitido **só quando a atividade termina sozinha**, ao esgotar a própria duração: nunca ao entrar no estado, nunca por transição recusada, nunca por comando. Não transporta recompensa — Caramelo não sabe o que a atividade vale. Cobre `EATING`, `TRAINING` e `RESTING`; `HAPPY` fica de fora, porque é reação e não atividade pedida.
+
+### Códigos de rejeição
+
+Códigos estáveis do enum `FeedingSystem.Rejection`, nunca frases livres. A interface traduz se precisar.
+
+| Código | Quando |
+| ------ | ------ |
+| `NOT_CONFIGURED` | dependências ainda não entregues |
+| `UNKNOWN_FOOD` | identificador ausente de `foods.json` |
+| `ON_COOLDOWN` | aquele alimento ainda está em recarga |
+| `MEAL_PENDING` | já existe uma refeição a caminho |
+| `DOG_BUSY` | Caramelo está em `EATING` ou `TRAINING` |
+| `DOG_REFUSED` | Caramelo recusou por outro motivo |
+
+Pedidos **nunca são enfileirados**: um pedido recusado simplesmente não acontece. Doze cliques seguidos produzem uma refeição só.
+
+### O pote
+
+`FoodBowl` vive em `PropsLayer`, em `(987.6, 820.1)` — 54 px do `FoodPoint` `(941.6, 792.1)`. Alinhado com ele, mas deslocado o bastante para Caramelo não ficar exatamente em cima. **As coordenadas do `FoodPoint` e o polígono do quintal não foram alterados.**
+
+É feito de `Polygon2D` do próprio Godot, sem asset externo: sombra, corpo, borda, interior e seis grãos. Como está em `PropsLayer` (`z_index` 10), acompanha a escala do quintal e é desenhado à frente de Caramelo.
+
+A área clicável é uma `Area2D` com cápsula do tamanho do visual, com `monitoring` e `monitorable` desligados — ela existe só para captar o clique e **não bloqueia Caramelo**, que nem usa física para andar. Ao passar o mouse, o pote cresce 6% e clareia, e o cursor vira uma mãozinha.
+
+### O menu
+
+`FoodMenu` é um `Control` dentro de `Interface`. Fica oculto por padrão e alterna ao clicar no pote. Mostra os três alimentos **lidos do JSON**, com nome em português, ganhos de energia e vínculo e, quando em recarga, o tempo restante em `m:ss`. Só o alimento indisponível fica desabilitado. Fecha ao aceitar um pedido; uma recusa mantém o menu aberto e utilizável. Não pausa o jogo.
+
+**Legibilidade em qualquer resolução.** Com `stretch/aspect = "expand"` o viewport cresce conforme a janela: em 640 × 1000 ele vira 1920 × 2849. Um painel de tamanho fixo em unidades do viewport encolheria a um terço na tela. O menu multiplica suas medidas pelo fator `viewport.y / janela.y`, de modo a ocupar sempre o mesmo espaço físico — medido: **300 × ~245 px de tela** em 1280 × 720, 1024 × 768 e 640 × 1000.
+
+O fator é aplicado aos **tamanhos de fonte**, e não ao `scale` do nó: escalar o nó reamostraria o texto já rasterizado e ele sairia borrado nas proporções extremas.
+
+Não é um sistema genérico de janelas — é um painel só, com três botões.
+
+### Integração
+
+`GameSession` resolve Caramelo, o pote e o `FoodPoint` **uma única vez**, na abertura, e entrega ao `FeedingSystem`. Não há busca por quadro e não há caminho frágil do tipo `../../World/Backyard`.
+
+A varredura acontece no `_ready` da sessão porque a árvore inteira já está montada quando o primeiro `_ready` roda — instanciar uma cena constrói todo o ramo antes de adicioná-lo. Por isso não é preciso esperar quadro nenhum. Dependências ausentes viram `push_error` com mensagem específica.
+
+```text
+Main
+├── GameSession          configuração, modelo, resolução de referências
+│   └── FeedingSystem    pedidos, refeição pendente, recompensa, recargas
+├── World
+│   └── Backyard
+│       ├── PropsLayer/FoodBowl
+│       └── CharacterLayer/Caramelo
+└── Interface
+    └── FoodMenu
+```
+
 ## Estrutura da cena principal
 
 ```text
 Main                    (Node)
-├── GameSession         (Node)        ← configuração e modelo de progressão
+├── GameSession         (Node)        ← configuração, modelo e resolução de referências
+│   └── FeedingSystem   (Node)        ← pedidos, recompensa e recargas
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
 │       ├── Background        (Sprite2D)     z = -100
@@ -457,15 +594,17 @@ Main                    (Node)
 │       ├── CharacterLayer    (Node2D)       z = 0, y_sort_enabled
 │       │   └── Caramelo      (instância de caramelo.tscn, em (880, 860))
 │       ├── PropsLayer        (Node2D)       z = 10
+│       │   └── FoodBowl      (instância de food_bowl.tscn, em (987.6, 820.1))
 │       └── ForegroundLayer   (Node2D)       z = 20
-└── Interface           (CanvasLayer, camada 1, vazia)
+└── Interface           (CanvasLayer, camada 1)
+    └── FoodMenu        (instância de food_menu.tscn, oculto por padrão)
 ```
 
 `GameSession` é o primeiro filho de `Main`, antes de `World`: ela carrega a configuração no `_ready` e o resto da cena pode contar com o modelo já pronto.
 
 O `ColorRect` provisório da Etapa 2 foi removido da cena principal depois que o fundo definitivo foi validado. O papel conceitual de `Background` passou para dentro de `backyard.tscn`, junto com o resto do cenário — manter um segundo fundo em `main.tscn` duplicaria a responsabilidade sem nenhum ganho.
 
-`Interface` continua vazia e em `CanvasLayer` de camada 1. Como o cenário vive na camada 0, a interface fica garantidamente acima dele.
+`Interface` é um `CanvasLayer` de camada 1. Como o cenário vive na camada 0, a interface fica garantidamente acima dele. Até a Etapa 5 ela estava vazia; agora hospeda o menu de alimentos, que continua oculto por padrão.
 
 ### Por que a raiz `Main` é um `Node`
 
@@ -516,15 +655,20 @@ godot --headless --path . --script tests/test_caramelo_controller.gd
 
 # configuração, atributos e progressão — 187 verificações
 godot --headless --path . --script tests/test_progression.gd
+
+# sistema de alimentação — 105 verificações
+godot --headless --path . --script tests/test_feeding_system.gd
 ```
 
 **`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
 
 **`test_progression.gd`** cobre a existência e validade dos três JSON, campos obrigatórios, unicidade de IDs, limiares crescentes, relações entre arquivos, **22 formas diferentes de configuração inválida**, os limites e a atomicidade da energia, os cinco níveis, os desbloqueios de vínculo, valores e ordem dos sinais, a posse do modelo pela `GameSession`, o desacoplamento entre Caramelo e o modelo, e a aritmética da progressão.
 
+**`test_feeding_system.gd`** cobre o pedido e as seis formas de recusa, o direcionamento ao `FoodPoint`, a recompensa só na conclusão e exatamente uma vez, sinais duplicados, conclusões de outra atividade, o teto de energia, a ordem obrigatória dos efeitos, recargas independentes vindas do JSON, a frequência de `cooldown_changed`, `activity_completed`, o pote e o menu na cena, e a ausência de recompensa sem ação do jogador.
+
 Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
 
-O tempo nunca é esperado de verdade: as suítes chamam `Caramelo.simulate(delta)` em laço, de modo que dez minutos de jogo passam em milissegundos e o resultado é determinístico.
+O tempo nunca é esperado de verdade: as suítes chamam `Caramelo.simulate(delta)` e `FeedingSystem.simulate(delta)` em laço, de modo que dez minutos de jogo — ou uma recarga de quinze — passam em milissegundos, com resultado determinístico.
 
 ### Aritmética verificada
 
@@ -565,6 +709,21 @@ godot --path . --resolution 1024x768 --position 60,60
 godot --path . --resolution 640x1000  --position 60,60
 ```
 
+### Alimentação
+
+1. Clique no **pote azul**, à direita de onde Caramelo costuma parar. O menu abre embaixo.
+2. Confirme os três alimentos com nome, energia e vínculo.
+3. Escolha um. O menu fecha e Caramelo caminha até o pote.
+4. Ele abaixa a cabeça e come por cerca de 4 s, depois comemora.
+5. Clique no pote de novo: **só aquele alimento** aparece esmaecido, com o tempo restante (`volta em 4:59`). Os outros dois continuam habilitados.
+6. Espere e confirme que o tempo desce e o botão volta a funcionar.
+
+Sem clicar em nada, energia e vínculo ficam parados em 70 e 0 — nenhuma recompensa acontece sozinha.
+
+O menu foi verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: ele nunca sai da tela e mantém o mesmo tamanho físico (300 × ~245 px) em todas.
+
+### Área caminhável
+
 Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sobre o piso, o que deixa ver que Caramelo nunca o atravessa:
 
 ```bash
@@ -579,14 +738,15 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `data/levels.json`, `data/foods.json`, `data/exercises.json`: a fonte única de todo o balanceamento. Os diretórios vazios `data/foods/`, `data/exercises/` e `data/levels/` foram removidos.
-* `scripts/systems/game_config.gd`: carregador com validação estrita dos três arquivos e das relações entre eles.
-* `scripts/systems/progression_model.gd`: o modelo de atributos, nível derivado, desbloqueios e sinais.
-* `scripts/systems/game_session.gd`: o nó que carrega a configuração uma vez e possui o modelo.
-* `tests/test_progression.gd`: 187 verificações permanentes, incluindo 22 formas de configuração inválida.
-* `scenes/main/main.tscn`: ganhou `GameSession` como primeiro filho de `Main`.
+* `scripts/systems/feeding_system.gd`: o ciclo da refeição — pedido, pendência única, recompensa na conclusão e recargas.
+* `scenes/environment/food_bowl.tscn` + `scripts/environment/food_bowl.gd`: o pote clicável, feito de polígonos.
+* `scenes/ui/food_menu.tscn` + `scripts/ui/food_menu.gd`: o menu contextual dos três alimentos.
+* `tests/test_feeding_system.gd`: 105 verificações permanentes.
+* `scripts/dog/caramelo.gd`: ganhou o sinal `activity_completed` e passou a aceitar um pedido de atividade a partir de `HAPPY`, saltando por `IDLE`.
+* `scripts/systems/game_session.gd`: resolve Caramelo, o pote e o `FoodPoint` uma única vez e configura o sistema.
+* `scenes/environment/backyard.tscn` e `scenes/main/main.tscn`: instanciam o pote, o sistema e o menu.
 
-Caramelo **não foi alterado**: a cena, o controlador e o visual estão exatamente como na Etapa 4.
+`data/foods.json` **não foi alterado** — os três alimentos já estavam corretos desde a Etapa 5.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -608,12 +768,21 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **`EATING`, `TRAINING` e `HAPPY` não são jogabilidade.** Rodam o comportamento visual, respeitam as regras de interrupção e terminam sozinhos. Não concedem nada, porque não há atributos.
 * **Um único `TrainingPoint`.** Segue valendo a limitação da Etapa 3: a arte tem dois conjuntos de treino e Caramelo só conhece o da esquerda. Os dois exercícios apontam para o mesmo `training_point` em `exercises.json`.
 
+### Alimentação
+
+* **Nada é persistido.** As recargas correm só com o aplicativo aberto e zeram ao reabrir. O `MVP_SPEC.md` §12 exige que elas continuem correndo com o jogo fechado — isso é da Etapa 10.
+* **O pote é o único elemento clicável do cenário**, como manda a §6. O restante é pintura de fundo.
+* **Caramelo não vira para o pote ao comer.** Se ele chega vindo da direita, come de costas para a vasilha. A arte é provisória e a correção vem com os sprites reais.
+* **Sem fila e sem cancelamento.** Depois de aceito, o pedido vai até o fim: `EATING` é não interrompível por especificação, e não há como desistir a caminho.
+* **O menu não mostra energia nem vínculo atuais.** Ele lista só o que cada alimento dá. As barras permanentes são o HUD da Etapa 9.
+* **Valores provisórios.** As recargas de 5, 15 e 10 min seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
+
 ### Atributos e progressão
 
-* **Nada alimenta o modelo.** Ele é criado com os valores iniciais e fica parado ali: comer, treinar e o carinho continuam sem efeito, e nenhum estado de Caramelo gasta energia ou concede força. A ligação vem na Etapa 6.
-* **Nada é salvo.** Fechar o jogo descarta os valores; não há persistência nem progresso offline.
+* **Só a alimentação alimenta o modelo.** Treino e carinho continuam sem efeito, e nenhum estado gasta energia ou concede força.
+* **Nada é salvo.** Fechar o jogo descarta energia, vínculo e recargas; não há persistência nem progresso offline.
 * **Os desbloqueios não têm efeito visual.** `muscular_form`, `final_pose`, `level_2_celebration` e os três comportamentos de vínculo existem só como consulta.
-* **Sem recarga de alimento em funcionamento.** `cooldown_seconds` está nos dados, mas nenhum contador corre.
+
 * **A configuração é lida só na abertura.** Editar um JSON com o jogo rodando não muda nada; é preciso reabrir. Não há recarga em tempo de execução, por decisão de escopo.
 * **`max_energy` é fixo em 100.** Vem dos dados, mas nada no MVP o altera.
 * **Valores provisórios.** As recargas dos alimentos e a chance de reação cômica seguem pendentes de playtest (pontos em aberto A-2 do `MVP_SPEC.md`).
@@ -642,7 +811,8 @@ Nada de jogabilidade existe. Em particular, seguem pendentes:
 * Os cinco comportamentos ociosos do `MVP_SPEC.md` §9 (sentar, alongar, farejar, perseguir mosca). Esta etapa entrega apenas ocioso, caminhada e descanso.
 * Carinho e os comportamentos afetivos por vínculo.
 * Objetos do cenário como entidades próprias — pote, halteres e barras ainda fazem parte da imagem de fundo.
-* Alimentação, exercícios e descanso com efeito de verdade — o modelo existe, mas nada o aciona.
+* Treino e descanso com efeito de verdade — só a alimentação está ligada ao modelo.
+* Carinho e os comportamentos afetivos por vínculo.
 * Interface, barras e botões.
 * Salvamento local e progresso offline.
 * Modo papel de parede, modo silencioso e redução de consumo.

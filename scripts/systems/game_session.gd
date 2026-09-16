@@ -6,9 +6,9 @@ extends Node
 ## Autoload seria estado global vivo tambem no editor e em cenas de teste, e nada aqui
 ## precisa disso. Quem precisar da sessao a encontra pelo grupo, nunca por caminho fixo.
 ##
-## A sessao **nao** conhece Caramelo: nao le nem escreve na maquina de estados, nao se
-## liga aos sinais dele e nao concede recompensa alguma. O acoplamento entre atributos e
-## comportamento so aparece na Etapa 6.
+## A sessao resolve as referencias **uma unica vez**, na abertura, e as entrega a quem
+## precisa. Ela nao vira controlador: nao le nem escreve na maquina de estados de Caramelo
+## e nao concede recompensa alguma — quem faz isso e o `FeedingSystem`.
 ##
 ## Nesta etapa nada e gravado em disco.
 
@@ -16,6 +16,9 @@ const GROUP := &"game_session"
 
 var _config: GameConfig
 var _model: ProgressionModel
+var _feeding: FeedingSystem
+var _dog: Caramelo
+var _food_point: Marker2D
 
 
 func _ready() -> void:
@@ -29,6 +32,62 @@ func _ready() -> void:
 		assert(false, "Configuracao de jogo invalida:\n%s" % _config.describe_errors())
 		return
 	_model = ProgressionModel.new(_config)
+	_wire_dependencies()
+
+
+## Resolve Caramelo, o pote e o `FoodPoint` uma unica vez e entrega ao sistema de
+## alimentacao.
+##
+## A varredura acontece aqui, e nao em `_ready` de cada parte, porque a arvore inteira ja
+## esta montada quando o primeiro `_ready` roda — instanciar uma cena constroi todo o
+## ramo antes de adiciona-lo. Por isso nao e preciso esperar quadro nenhum, e nao ha
+## caminho fragil do tipo `../../World/Backyard`.
+func _wire_dependencies() -> void:
+	_feeding = _find_descendant(self, func(node: Node) -> bool: return node is FeedingSystem) as FeedingSystem
+	if _feeding == null:
+		push_error("GameSession: nenhum FeedingSystem entre os filhos.")
+		return
+	var scope: Node = get_parent() if get_parent() != null else self
+	_dog = _find_descendant(scope, func(node: Node) -> bool: return node is Caramelo) as Caramelo
+	var bowl := _find_descendant(scope, func(node: Node) -> bool: return node is FoodBowl)
+	_food_point = _find_descendant(scope, func(node: Node) -> bool:
+		return node is Marker2D and node.name == &"FoodPoint") as Marker2D
+	if _dog == null:
+		push_error("GameSession: Caramelo nao encontrado na cena.")
+		return
+	if _food_point == null:
+		push_error("GameSession: FoodPoint nao encontrado na cena.")
+		return
+	_feeding.configure(_config, _model, _dog)
+	if bowl == null:
+		push_error("GameSession: pote de comida nao encontrado na cena.")
+	else:
+		_feeding.attach_bowl(bowl)
+
+
+func _find_descendant(from: Node, predicate: Callable) -> Node:
+	var queue: Array[Node] = [from]
+	while not queue.is_empty():
+		var node: Node = queue.pop_front()
+		if node != from and predicate.call(node):
+			return node
+		for child in node.get_children():
+			queue.append(child)
+	return null
+
+
+func get_feeding_system() -> FeedingSystem:
+	return _feeding
+
+
+func get_caramelo() -> Caramelo:
+	return _dog
+
+
+## Posicao do `FoodPoint` no espaco do proprio marcador. Caramelo ja recebe esse ponto do
+## quintal; aqui ele serve para alinhamento e verificacao.
+func get_food_point() -> Marker2D:
+	return _food_point
 
 
 ## A sessao presente na arvore, ou `null`. Usar isto em vez de caminhos como `../../`.

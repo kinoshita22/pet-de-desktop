@@ -13,7 +13,18 @@ extends CharacterBody2D
 ## Transicoes rejeitadas nao emitem nada.
 signal state_changed(previous_state: int, new_state: int)
 
+## Emitido quando uma atividade termina **naturalmente**, ao esgotar a propria duracao.
+##
+## Nao e emitido ao entrar no estado, nem por transicao recusada, nem quando o estado muda
+## por comando. Nao transporta recompensa alguma: Caramelo nao sabe o que a atividade
+## vale — quem paga e o sistema dono dela.
+signal activity_completed(activity: int)
+
 enum State { IDLE, WALKING, EATING, TRAINING, RESTING, HAPPY }
+
+## Estados que `request_activity` aceita e que, ao terminar sozinhos, emitem
+## `activity_completed`. `HAPPY` fica de fora: e reacao, nao atividade pedida.
+const ACTIVITIES: Array = [State.EATING, State.TRAINING, State.RESTING]
 
 ## Matriz de transicoes do `MVP_SPEC.md` secao 10. Qualquer par fora dela e invalido.
 const TRANSITIONS: Dictionary = {
@@ -118,19 +129,25 @@ func request_state(new_state: int) -> bool:
 ## ponto e so ao chegar entra na atividade. Se ja estiver no ponto, entra direto.
 ## Devolve `true` quando o comando e aceito, ainda que o estado resultante seja `WALKING`.
 func request_activity(activity: int) -> bool:
+	if not ACTIVITIES.has(activity):
+		return false
 	if not _points.has(activity):
 		return false
 	if not is_interruptible():
 		return false
 	var target: Vector2 = _points[activity]
-	if position.distance_to(target) <= ARRIVAL_TOLERANCE:
-		return request_state(activity)
-	# A matriz nao liga `RESTING` nem `HAPPY` a `WALKING`: Caramelo primeiro se levanta
-	# (-> `IDLE`) e so entao caminha. Toda aresta percorrida continua sendo valida.
-	if _state != State.WALKING and not _transition_allowed(_state, State.WALKING):
+	var at_target := position.distance_to(target) <= ARRIVAL_TOLERANCE
+	var next_state := activity if at_target else State.WALKING
+	# A matriz nao liga `RESTING` nem `HAPPY` a `WALKING`, nem `HAPPY` a `EATING`. Nesses
+	# casos Caramelo primeiro se levanta ou se acalma (-> `IDLE`) e so entao segue. Toda
+	# aresta percorrida continua sendo valida — e o que permite pedir uma refeicao logo
+	# depois de outra, enquanto ele ainda comemora.
+	if _state != next_state and not _transition_allowed(_state, next_state):
 		if not _transition_allowed(_state, State.IDLE):
 			return false
 		_change_state(State.IDLE)
+	if at_target:
+		return request_state(activity)
 	var route := _route_to(target)
 	if route.is_empty():
 		return false
@@ -210,7 +227,11 @@ func simulate(delta: float) -> void:
 			_advance_along_route(step)
 		_:
 			if _state_duration > 0.0 and _state_elapsed >= _state_duration:
-				_change_state(_default_exit_state())
+				var finished := _state
+				# So avisa se a transicao de saida realmente aconteceu, e so para as
+				# atividades — assim o sinal sai exatamente uma vez por atividade.
+				if _change_state(_default_exit_state()) and ACTIVITIES.has(finished):
+					activity_completed.emit(finished)
 
 
 static func state_name(state: int) -> String:
