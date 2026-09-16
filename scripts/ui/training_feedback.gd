@@ -123,18 +123,9 @@ func _reposition() -> void:
 	if _anchor == null:
 		return
 	var viewport_size := get_viewport_rect().size
-	var window := get_window()
-	var window_height := float(window.size.y) if window != null else viewport_size.y
-	var factor: float = clampf(viewport_size.y / maxf(window_height, 1.0), 0.5, 8.0)
+	var factor := UiScale.factor_for(self)
 	_label.add_theme_font_size_override("font_size", roundi(BASE_FONT * factor))
-	var box := _panel.get_theme_stylebox("panel")
-	if box is StyleBoxFlat:
-		var flat := box as StyleBoxFlat
-		flat.content_margin_left = 14.0 * factor
-		flat.content_margin_right = 14.0 * factor
-		flat.content_margin_top = 8.0 * factor
-		flat.content_margin_bottom = 8.0 * factor
-		flat.set_corner_radius_all(roundi(8 * factor))
+	UiScale.scale_stylebox(_panel, factor, 8.0, 6.0, 8, 2)
 	var panel_size := _panel.get_combined_minimum_size()
 	_panel.size = panel_size
 	_anchor.position = Vector2(

@@ -30,6 +30,11 @@ signal activity_started(activity: int)
 ## nao reserva atividade e nao deve mover jogabilidade alguma.
 signal idle_behavior_changed(previous_behavior: int, new_behavior: int)
 
+## Emitido quando o jogador clica em Caramelo. O controlador **nao conhece a interface**:
+## ele so avisa que foi selecionado, e quem escuta decide o que fazer. Selecionar nunca
+## interrompe atividade nem altera estado.
+signal selected()
+
 enum State { IDLE, WALKING, EATING, TRAINING, RESTING, HAPPY }
 
 ## Estados que `request_activity` aceita e que, ao terminar sozinhos, emitem
@@ -135,11 +140,16 @@ var _rng := RandomNumberGenerator.new()
 var _seed_is_fixed := false
 
 @onready var _visual: Node = $Visual
+@onready var _selection_area: Area2D = $SelectionArea
+@onready var _selection_shape: CollisionShape2D = $SelectionArea/CollisionShape2D
 
 
 func _ready() -> void:
 	if not _seed_is_fixed:
 		_rng.randomize()
+	# A captacao de clique em 2D depende disto; o padrao varia conforme o viewport.
+	get_viewport().physics_object_picking = true
+	_selection_area.input_event.connect(_on_selection_input)
 	_enter_state(State.IDLE)
 
 
@@ -296,6 +306,17 @@ static func idle_behavior_name(behavior: int) -> String:
 	if behavior < 0 or behavior >= IDLE_BEHAVIOR_NAMES.size():
 		return "NONE"
 	return IDLE_BEHAVIOR_NAMES[behavior]
+
+
+## Estilo do treino em curso, para quem precise descrever a atividade.
+func get_training_style() -> StringName:
+	return _training_style
+
+
+## Seleciona Caramelo sem passar por evento de entrada. E o caminho que o clique real
+## tambem percorre, e o que os testes usam.
+func select() -> void:
+	selected.emit()
 
 
 ## Estilo visual do proximo treino. Puramente cosmetico.
@@ -578,10 +599,20 @@ func _arrive() -> void:
 	_change_state(State.IDLE)
 
 
+func _on_selection_input(_viewport: Node, event: InputEvent, _shape: int) -> void:
+	if event is InputEventMouseButton:
+		var mouse := event as InputEventMouseButton
+		if mouse.button_index == MOUSE_BUTTON_LEFT and mouse.pressed:
+			select()
+
+
 func _set_facing(direction: int) -> void:
 	if direction == _facing:
 		return
 	_facing = direction
+	# A area clicavel espelha junto, para acompanhar o corpo virado.
+	if _selection_shape != null:
+		_selection_shape.position.x = absf(_selection_shape.position.x) * -signf(float(direction))
 	if _visual != null and _visual.has_method("set_facing"):
 		_visual.call("set_facing", direction)
 

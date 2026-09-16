@@ -29,6 +29,9 @@ const BUTTON_HEIGHT := 30.0
 const SEPARATION := 8
 
 var _system: FeedingSystem
+## Retangulo ao qual o menu deve se encostar quando aberto pelo HUD. Vazio = base do
+## viewport, como no atalho pelo pote.
+var _anchor_rect := Rect2()
 var _buttons: Dictionary = {}     # StringName -> Button
 var _details: Dictionary = {}     # StringName -> Label
 
@@ -64,6 +67,13 @@ func attach(system: FeedingSystem) -> void:
 	_system.cooldown_changed.connect(_on_cooldown_changed)
 	_build_items()
 	_reposition()
+
+
+## Define a regiao a que o menu deve se encostar. `Rect2()` volta ao comportamento solto.
+func set_anchor_rect(rect: Rect2) -> void:
+	_anchor_rect = rect
+	if visible:
+		_reposition()
 
 
 func open() -> void:
@@ -160,13 +170,17 @@ func _reposition() -> void:
 	if _anchor == null or _panel == null:
 		return
 	var viewport_size := get_viewport_rect().size
-	var window := get_window()
-	var window_height := float(window.size.y) if window != null else viewport_size.y
-	# viewport.y / janela.y e exatamente o inverso da escala do canvas.
-	var factor: float = clampf(viewport_size.y / maxf(window_height, 1.0), 0.5, 8.0)
+	var factor := UiScale.factor_for(self)
 	_apply_scale(factor)
 	var panel_size := _panel.get_combined_minimum_size()
 	_panel.size = panel_size
+	# Quando aberto pelo HUD, o menu se encosta nele; sozinho, fica na base do viewport.
+	if _anchor_rect.size != Vector2.ZERO:
+		_anchor.position = Vector2(
+			clampf(_anchor_rect.position.x, 8.0 * factor,
+				maxf(viewport_size.x - panel_size.x - 8.0 * factor, 8.0 * factor)),
+			maxf(_anchor_rect.position.y - panel_size.y - 8.0 * factor, 8.0 * factor))
+		return
 	_anchor.position = Vector2(
 		(viewport_size.x - panel_size.x) * 0.5,
 		viewport_size.y - panel_size.y - MARGIN_BOTTOM * factor)
@@ -184,16 +198,7 @@ func _apply_scale(factor: float) -> void:
 		button.custom_minimum_size = Vector2(0.0, BUTTON_HEIGHT * factor)
 		(_details[food_id] as Label).add_theme_font_size_override(
 			"font_size", roundi(DETAIL_FONT * factor))
-	var box := _panel.get_theme_stylebox("panel")
-	if box is StyleBoxFlat:
-		var flat := box as StyleBoxFlat
-		var margin := 12.0 * factor
-		flat.content_margin_left = margin + 2.0 * factor
-		flat.content_margin_right = margin + 2.0 * factor
-		flat.content_margin_top = margin
-		flat.content_margin_bottom = margin
-		flat.set_corner_radius_all(roundi(10 * factor))
-		flat.set_border_width_all(maxi(1, roundi(2 * factor)))
+	UiScale.scale_stylebox(_panel, factor)
 
 
 # --------------------------------------------------------------------------------------

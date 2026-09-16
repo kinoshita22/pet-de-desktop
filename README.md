@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 8 de 12 — Descanso e comportamento ocioso.** O ciclo autônomo está completo: Caramelo come, treina e agora **descansa recuperando energia** (+1 por minuto), com a tendência de descansar crescendo conforme a energia cai. A ociosidade ganhou cinco microcomportamentos. **Carinho, HUD, salvamento e progresso offline continuam fora.**
+**Etapa 9 de 12 — Interface principal.** Os sistemas ganharam uma cara: clicar em Caramelo abre um HUD recolhível com energia, força, vínculo, nível e a atividade atual, mais os botões de alimentar, treinar e descansar. **Carinho, salvamento, progresso offline e modo papel de parede continuam fora.**
 
 ## Requisitos
 
@@ -885,6 +885,136 @@ Enum `RestSystem.Rejection`, estável:
 
 A exclusão mútua continua baseada na **reserva única de Caramelo**: `RestSystem`, `FeedingSystem` e `ExerciseSystem` não se conhecem.
 
+## Interface principal
+
+O HUD reúne o que as etapas anteriores construíram: consultar os quatro atributos, ver o que Caramelo está fazendo e disparar as três atividades — tudo em no máximo três cliques.
+
+Fica **oculto por padrão** e aparece ao clicar em Caramelo, como pede o `MVP_SPEC.md` §18. Fechado, não intercepta clique nenhum: o pote e os equipamentos continuam respondendo normalmente.
+
+### Estrutura
+
+```text
+MainHUD                  (Control, canto inferior esquerdo)
+├── Anchor
+│   ├── Panel
+│   │   └── Layout
+│   │       ├── Header            "Caramelo"
+│   │       ├── Level             "Nível 1"
+│   │       ├── Energy            "Energia 70/100" + barra
+│   │       ├── Strength          "Força 40" + "Próximo nível: 40/70"
+│   │       ├── Bond              "Vínculo 8" + "Próxima reação: 8/10"
+│   │       ├── CurrentActivity   "Ocioso"
+│   │       └── ActionBar         Alimentar · Treinar · Descansar
+│   └── ContextContainer          marca onde os menus se encaixam
+└── Toast                         mensagem curta, no topo
+```
+
+O painel mora no canto inferior esquerdo justamente para **não cobrir Caramelo**, que anda pelo centro e pela direita do quintal. Os menus contextuais abrem encostados na borda superior do painel.
+
+No nível 5 a linha de força vira `Nível máximo`; passado o último limiar de vínculo, a de vínculo vira `Todas as reações liberadas`. Os limiares vêm da configuração, nunca de constantes.
+
+### Atividade atual
+
+O texto **não sai só do estado** — uma caminhada dirigida diz para onde vai, consultando a reserva de Caramelo:
+
+| Situação | Texto |
+| -------- | ----- |
+| `IDLE` | Ocioso |
+| `WALKING` sem reserva | Passeando |
+| `WALKING` + reserva de comida | Indo comer |
+| `WALKING` + reserva de treino | Indo treinar |
+| `WALKING` + reserva de descanso | Indo descansar |
+| `EATING` | Comendo |
+| `TRAINING` com `push_ups` | Fazendo flexões |
+| `TRAINING` com `dumbbells` | Treinando com halteres |
+| `RESTING` | Descansando |
+| `HAPPY` | Feliz |
+
+### Fluxos, em cliques
+
+| Ação | Cliques |
+| ---- | ------: |
+| Alimentar | 3 — Caramelo → `Alimentar` → alimento |
+| Treinar | 3 — Caramelo → `Treinar` → exercício |
+| Descansar | 2 — Caramelo → `Descansar` |
+| Alimentar pelo atalho | 2 — pote → alimento |
+| Treinar pelo atalho | 1 — equipamento |
+
+O pote e os hotspots continuam funcionando exatamente como antes: o HUD é um caminho a mais, não um substituto.
+
+**A interface nunca aplica nada.** Os botões chamam `FeedingSystem.request_feeding`, `ExerciseSystem.request_exercise` e `RestSystem.request_rest`; quem aplica energia, força e vínculo são os sistemas. Nenhum script de UI chama um mutador do modelo — há um teste que lê o código-fonte para garantir isso.
+
+### Menu de exercícios
+
+Lista os dois exercícios com custo e ganho vindos de `data/exercises.json`. Um exercício indisponível fica desabilitado **e diz por quê**, em texto — o bloqueio nunca é indicado só por cor:
+
+```text
+Flexões     15 energia  →  +5 força
+Halteres    25 energia  →  +9 força  ·  bloqueado até o nível 3
+```
+
+Ele se atualiza por `level_changed` e `energy_changed`, então os halteres liberam **com o menu aberto**, sem reabrir a cena.
+
+### Estados dos botões
+
+* **Alimentar** e **Treinar** seguem habilitados mesmo com tudo bloqueado: abrir o menu é como o jogador descobre os tempos de recarga e os níveis exigidos.
+* **Descansar** desabilita quando há atividade reservada ou Caramelo está em `EATING`/`TRAINING`, com o motivo no tooltip. Energia cheia não bloqueia — descansar também é comportamento visual.
+
+### Menus contextuais e recolhimento
+
+Só um menu aberto por vez: abrir treino fecha alimentação e vice-versa; fechar o HUD fecha os dois. **Escape** fecha primeiro o menu contextual e, se nenhum estiver aberto, o HUD. Nenhum menu pausa o jogo.
+
+O HUD recolhe sozinho depois de **8 segundos** sem uso (`COLLAPSE_SECONDS`, comportamento de interface, não balanceamento). O contador reinicia ao selecionar Caramelo, apertar um botão, abrir um menu, passar o ponteiro sobre o HUD ou dar foco a um controle.
+
+Não recolhe enquanto: um menu contextual estiver aberto, o ponteiro estiver sobre o HUD, um controle do HUD tiver o foco, ou um toast ainda estiver na tela.
+
+`MainHUD.simulate(delta)` avança o recolhimento e o toast. A execução normal chama por `_process`; os testes adiantam os oito segundos instantaneamente.
+
+### Toasts
+
+Uma faixa curta no topo, que some sozinha em ~3 s e **não intercepta cliques**. Uma mensagem nova substitui a anterior; elas nunca se empilham.
+
+Os sistemas continuam devolvendo **códigos estáveis**; a interface é que os traduz:
+
+| Código | Mensagem |
+| ------ | -------- |
+| `ON_COOLDOWN` | Esse alimento ainda está descansando. |
+| `LOCKED` | Halteres liberados no nível 3. |
+| `INSUFFICIENT_ENERGY` | Energia insuficiente. |
+| `DOG_BUSY`, `ACTIVITY_RESERVED` | Caramelo está ocupado. |
+
+Também aparecem confirmações reais — `+20 energia  +1 vínculo`, `−15 energia`, `+5 força`, `Nível 3!`, `Descanso iniciado.` — sempre com os valores **efetivamente aplicados** pelos sistemas.
+
+### Atualização por sinais
+
+O HUD faz uma leitura completa ao abrir e, daí em diante, **só reage a sinais**. Não há consulta por quadro: `_process` apenas avança temporizadores.
+
+| Origem | Sinais | O que atualiza |
+| ------ | ------ | -------------- |
+| `Caramelo` | `selected`, `state_changed`, `activity_started`, `activity_completed` | abertura, atividade, botões |
+| `ProgressionModel` | `energy_changed`, `strength_changed`, `bond_changed`, `level_changed`, `unlock_granted` | atributos, botões, toast |
+| `FeedingSystem` | `feeding_completed`, `feeding_rejected`, `cooldown_changed`, `bowl_selected` | toast, botões |
+| `ExerciseSystem` | `exercise_started`, `exercise_completed`, `exercise_rejected` | toast |
+| `RestSystem` | `rest_started`, `rest_completed`, `rest_rejected` | atividade, botões, toast |
+
+Todas as conexões passam por um guarda contra duplicata, então religar o HUD não faz nada acontecer duas vezes.
+
+### Seleção de Caramelo
+
+Caramelo ganhou uma `SelectionArea` de 152 × 96 que acompanha o corpo e **espelha junto com a direção**. Clicar nela emite `selected` — e só isso: selecionar não interrompe atividade, não altera estado e funciona também durante `EATING` e `TRAINING`, para consulta.
+
+O controlador **não conhece a interface**: ele avisa que foi selecionado e quem escuta decide.
+
+### Teclado e acessibilidade básica
+
+Enter ou espaço ativam o controle em foco, Tab percorre os botões na ordem em que aparecem, e Escape fecha. Os botões têm texto completo (não só ícones), tooltips curtos, altura mínima de 32 px e estados desabilitados que dizem o motivo em palavras.
+
+### Responsividade
+
+Toda a interface usa a mesma compensação de escala, agora extraída para [`UiScale`](scripts/ui/ui_scale.gd) e compartilhada pelos quatro scripts de UI — antes ela estava duplicada entre o menu de alimentos e o feedback de treino.
+
+Medido em janelas reais: o painel mantém **264 × ~255 px de tela** em 1850 × 950, 1280 × 720, 1024 × 768 e 640 × 950 — quatro escalas de canvas diferentes (1,137 a 3,0). Em todas, HUD e menu ficam inteiros dentro da tela e não se sobrepõem.
+
 ## Estrutura da cena principal
 
 ```text
@@ -910,9 +1040,11 @@ Main                    (Node)
 │       │   ├── PushUpsHotspot    (instância de equipment_hotspot.tscn)
 │       │   └── DumbbellsHotspot  (instância de equipment_hotspot.tscn)
 │       └── ForegroundLayer   (Node2D)       z = 20
-└── Interface           (CanvasLayer, camada 1)
-    ├── FoodMenu         (instância de food_menu.tscn, oculto por padrão)
-    └── TrainingFeedback (instância de training_feedback.tscn, oculto por padrão)
+└── Interface           (CanvasLayer, camada 1) — tudo oculto por padrão
+    ├── FoodMenu         (instância de food_menu.tscn)
+    ├── ExerciseMenu     (instância de exercise_menu.tscn)
+    ├── TrainingFeedback (instância de training_feedback.tscn)
+    └── MainHUD          (instância de main_hud.tscn)
 ```
 
 `GameSession` é o primeiro filho de `Main`, antes de `World`: ela carrega a configuração no `_ready` e o resto da cena pode contar com o modelo já pronto.
@@ -979,6 +1111,9 @@ godot --headless --path . --script tests/test_exercise_system.gd
 
 # descanso e comportamento ocioso — 126 verificações
 godot --headless --path . --script tests/test_rest_and_idle.gd
+
+# HUD principal e menus contextuais — 103 verificações
+godot --headless --path . --script tests/test_main_ui.gd
 ```
 
 **`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
@@ -990,6 +1125,8 @@ godot --headless --path . --script tests/test_rest_and_idle.gd
 **`test_exercise_system.gd`** cobre os dois exercícios e seus números vindos do JSON, os dois pontos distintos e a ausência do marcador antigo, os hotspots, o bloqueio por nível nos níveis 1, 2 e 3, as dez formas de recusa, o débito só na entrada e uma única vez, a falha defensiva de débito, as durações de 20 s e 30 s simuladas, a recompensa só na conclusão e uma única vez, a subida de nível pelo próprio treino, a exclusão mútua nos dois sentidos, a reação cômica com semente fixa e as poses distintas com o halter provisório.
 
 **`test_rest_and_idle.gd`** cobre a seção `rest` e onze formas de configuração inválida, o acumulador fracionário (59 s nada, o segundo restante +1, descansos separados somando), a ausência de recuperação nos outros cinco estados, deltas inválidos, saturação sem crédito oculto, o descanso solicitado com suas cinco recusas, a tendência crescente por faixa de energia, a garantia de não encadear descansos, os cinco microcomportamentos com sorteio reprodutível e o deslocamento apenas visual de `CHASE_FLY`.
+
+**`test_main_ui.gd`** cobre o HUD único e oculto, a abertura por seleção sem alterar nada, a ausência de conexões duplicadas, os quatro atributos e seus textos derivados da configuração, os dez textos de atividade, os três fluxos em cliques, o menu de exercícios com bloqueio por nível e por energia, os atalhos do pote e dos hotspots, a exclusividade dos menus, o recolhimento por tempo simulado, o Escape em duas etapas, o toast e a garantia de que nenhum script de UI chama mutador do modelo.
 
 Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
 
@@ -1060,6 +1197,17 @@ Durante um treino, o pote recusa qualquer alimento, e vice-versa. Nenhum pedido 
 
 Verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: a faixa de feedback mantém ~277 × 37 px de tela e nunca sai do enquadramento.
 
+### Interface
+
+1. **Clique em Caramelo.** O HUD aparece no canto inferior esquerdo, com nível, energia, força, vínculo e a atividade atual.
+2. Deixe o ponteiro longe dele: em 8 segundos ele recolhe sozinho.
+3. Abra de novo e clique em **Alimentar** — o menu abre encostado acima do painel. Clique em **Treinar**: o de alimentação fecha.
+4. No nível 1, **Halteres** aparece esmaecido com "bloqueado até o nível 3", em texto e não só em cor.
+5. Treine até o nível 3 com o menu aberto: os halteres liberam sem reabrir nada.
+6. **Escape** fecha primeiro o menu; apertando de novo, fecha o HUD.
+7. Peça algo impossível (comida em recarga, treino durante treino): a faixa no topo explica e some sozinha.
+8. Enquanto um menu está aberto ou o ponteiro está sobre o painel, o HUD não recolhe.
+
 ### Descanso e ociosidade
 
 Deixe rodando alguns minutos, sem clicar em nada:
@@ -1090,15 +1238,15 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scripts/systems/rest_system.gd`: recuperação de energia com acumulador fracionário, descanso solicitado e cálculo da tendência autônoma.
-* `tests/test_rest_and_idle.gd`: 126 verificações permanentes.
-* `data/levels.json`: nova seção `rest` com taxa, limiares e os três pesos.
-* `scripts/systems/game_config.gd`: validação estrita dessa seção e acessor `get_rest()`.
-* `scripts/dog/caramelo.gd`: os cinco microcomportamentos de `IDLE` com o sinal `idle_behavior_changed`, e `set_rest_tendency`, que substitui a chance fixa de descanso.
-* `scripts/dog/caramelo_visual.gd`: as cinco poses ociosas e o descanso com olho fechado.
-* `scripts/systems/game_session.gd` e `scenes/main/main.tscn`: o `RestSystem`, resolvido e configurado como os outros.
+* `scenes/ui/main_hud.tscn` + `scripts/ui/main_hud.gd`: o HUD recolhível, com resumo, atividade, barra de ações e toast.
+* `scenes/ui/exercise_menu.tscn` + `scripts/ui/exercise_menu.gd`: o menu compacto dos dois exercícios.
+* `scripts/ui/ui_scale.gd`: a compensação de escala, extraída da duplicação entre o menu de alimentos e o feedback de treino.
+* `tests/test_main_ui.gd`: 103 verificações permanentes.
+* `scripts/dog/caramelo.gd` e `scenes/dog/caramelo.tscn`: a `SelectionArea` e o sinal `selected`, mais `get_training_style()`.
+* `scripts/ui/food_menu.gd` e `scripts/ui/training_feedback.gd`: passam a usar `UiScale`; o de alimentos ganhou `set_anchor_rect` para se encostar no HUD.
+* `scenes/main/main.tscn`: o menu de exercícios e o HUD em `Interface`.
 
-`data/foods.json`, `data/exercises.json`, o asset do quintal e as posições dos marcadores **não foram tocados**.
+**Nenhum dado de balanceamento foi tocado**: `data/` está byte a byte igual, assim como o asset do quintal.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -1126,6 +1274,15 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **Sem fila e sem cancelamento.** Depois de aceito, o pedido vai até o fim: `EATING` é não interrompível por especificação, e não há como desistir a caminho.
 * **O menu não mostra energia nem vínculo atuais.** Ele lista só o que cada alimento dá. As barras permanentes são o HUD da Etapa 9.
 * **Valores provisórios.** As recargas de 5, 15 e 10 min seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
+
+### Interface
+
+* **Sem configurações, bandeja ou modo silencioso.** O `MVP_SPEC.md` §18 e §19 pedem uma engrenagem de opções e controles de pausa; isso é das Etapas 11 e 12.
+* **O HUD não some sozinho durante uma atividade longa.** Ele recolhe por inatividade como em qualquer outro momento, então um treino de 30 s termina com o painel fechado se ninguém mexer.
+* **Sem navegação completa por teclado.** Tab e Escape funcionam, mas não há atalhos para as ações nem foco inicial definido ao abrir.
+* **Os menus contextuais abrem sempre acima do painel**, à esquerda. Em janelas muito baixas eles empilham para cima, sem reposicionamento inteligente.
+* **A `SelectionArea` de Caramelo e os hotspots de equipamento podem se sobrepor** quando ele está treinando: o clique cai em um dos dois conforme a ordem do motor. Nenhum dos resultados é destrutivo.
+* **`ContextContainer` é só um marcador de ancoragem.** Os menus continuam sendo cenas independentes em `Interface`, não filhos do painel.
 
 ### Descanso e ociosidade
 

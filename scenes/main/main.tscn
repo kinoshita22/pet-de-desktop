@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/systems/game_session.gd" id="1_session"]
 [ext_resource type="PackedScene" path="res://scenes/environment/backyard.tscn" id="2_backyard"]
@@ -7,6 +7,8 @@
 [ext_resource type="Script" path="res://scripts/systems/exercise_system.gd" id="5_exercise"]
 [ext_resource type="PackedScene" path="res://scenes/ui/training_feedback.tscn" id="6_feedback"]
 [ext_resource type="Script" path="res://scripts/systems/rest_system.gd" id="7_rest"]
+[ext_resource type="PackedScene" path="res://scenes/ui/exercise_menu.tscn" id="8_exmenu"]
+[ext_resource type="PackedScene" path="res://scenes/ui/main_hud.tscn" id="9_hud"]
 
 [node name="Main" type="Node"]
 
@@ -30,4 +32,8 @@ script = ExtResource("7_rest")
 
 [node name="FoodMenu" parent="Interface" instance=ExtResource("4_menu")]
 
+[node name="ExerciseMenu" parent="Interface" instance=ExtResource("8_exmenu")]
+
 [node name="TrainingFeedback" parent="Interface" instance=ExtResource("6_feedback")]
+
+[node name="MainHUD" parent="Interface" instance=ExtResource("9_hud")]
