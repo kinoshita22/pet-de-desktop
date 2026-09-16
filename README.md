@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 7 de 12 — Sistema de exercícios.** Os dois ciclos funcionais estão de pé. Além de comer, Caramelo agora treina: clicar nas barras de flexão ou nos halteres o leva ao equipamento certo, a energia sai ao começar, a força entra ao terminar e o nível sobe sozinho. Halteres liberam no nível 3. **Carinho, descanso com recuperação, HUD, salvamento e progresso offline continuam fora.**
+**Etapa 8 de 12 — Descanso e comportamento ocioso.** O ciclo autônomo está completo: Caramelo come, treina e agora **descansa recuperando energia** (+1 por minuto), com a tendência de descansar crescendo conforme a energia cai. A ociosidade ganhou cinco microcomportamentos. **Carinho, HUD, salvamento e progresso offline continuam fora.**
 
 ## Requisitos
 
@@ -157,11 +157,11 @@ Os seis estados do `MVP_SPEC.md` §10, no enum `Caramelo.State`. Não há string
 
 | Estado | Entrada | Duração / término | Interrompível | Movimento | Visual |
 | ------ | ------- | ----------------- | ------------- | --------- | ------ |
-| `IDLE` | Estado inicial; fim de qualquer outro | Espera sorteada de 2,5 a 6 s, ao fim da qual decide a próxima ação | Sim | Parado | Respiração leve, rabo lento |
+| `IDLE` | Estado inicial; fim de qualquer outro | Espera sorteada de 2,5 a 6 s, ao fim da qual decide a próxima ação | Sim | Parado | Respiração leve e um dos cinco microcomportamentos |
 | `WALKING` | Ao receber um destino válido | Ao alcançar o destino | Sim — um novo comando substitui o destino | 130 px/s pelo trajeto | Balanço do corpo, patas alternadas, rabo no ritmo |
 | `EATING` | Ao chegar ao `FoodPoint` | 4 s (S-4) | **Não** | Parado | Cabeça abaixada ao chão, rabo rápido |
 | `TRAINING` | Ao chegar ao ponto do exercício | duração vinda de `exercises.json` | **Não** | Parado | Flexões ou halteres, conforme o estilo |
-| `RESTING` | Comando, ou decisão autônoma | Sorteada de 7 a 14 s | Sim | Parado | Deita: encolhe até o chão, respiração ampla |
+| `RESTING` | `RestSystem.request_rest()`, ou decisão autônoma | Sorteada de 7 a 14 s | Sim | Parado | Deitado no chão, respiração lenta, olho quase fechado. **Recupera energia** |
 | `HAPPY` | Fim de `EATING` ou `TRAINING`; comando | 2 s (S-4) | Sim | Parado | Pulinhos e rabo acelerado |
 
 Nenhum estado altera `energy`, `strength`, `bond` ou `level` — esses atributos não existem ainda. `EATING`, `TRAINING` e `HAPPY` rodam só o comportamento visual e terminam sozinhos, sem recompensa.
@@ -192,7 +192,7 @@ Reproduz literalmente o `MVP_SPEC.md` §10. Qualquer par fora dela é rejeitado 
 
 Sem interação, Caramelo alterna apenas entre `IDLE`, `WALKING` e `RESTING`. Começa em `IDLE`.
 
-Ao fim de cada espera ociosa ele decide uma única vez — **nunca por quadro**, o que evita tremor e troca de estado frequente. A chance de caminhar é 72%; o resto é descansar. **Dois descansos seguidos são proibidos**, aplicando ao caso o princípio do `MVP_SPEC.md` §9 de não repetir o mesmo comportamento autônomo duas vezes em sequência. Medido em 20 sementes × 10 min: 22% de descansos e nenhuma sequência repetida, com troca de estado a cada ~9 s.
+Ao fim de cada espera ociosa ele decide uma única vez — **nunca por quadro**, o que evita tremor e troca de estado frequente. A chance de descansar deixou de ser fixa na Etapa 8: ela vem da energia atual, entregue pelo `RestSystem`. **Dois descansos seguidos são proibidos**, aplicando ao caso o princípio do `MVP_SPEC.md` §9 de não repetir o mesmo comportamento autônomo duas vezes em sequência.
 
 Se nenhum destino válido for sorteado, ele simplesmente continua ocioso e tenta de novo depois.
 
@@ -737,13 +737,162 @@ Caramelo recebe só o nome do estilo (`push_ups` ou `dumbbells`), nunca custos o
 * **Flexões:** o corpo desce e sobe, patas junto ao piso, sem deslocamento horizontal.
 * **Halteres:** postura erguida, patas dianteiras alternando, e um **halter geométrico provisório** que aparece só durante esse exercício e some ao terminar.
 
+## Descanso e comportamento ocioso
+
+O ciclo autônomo fecha aqui: Caramelo agora recupera energia descansando, e a ociosidade deixou de ser uma pose só.
+
+### Configuração
+
+Em `data/levels.json`, seção `rest` — separada da progressão de força e dos limiares de vínculo:
+
+```jsonc
+"rest": {
+  "energy_per_minute": 1,
+  "low_energy_threshold": 30,
+  "preferred_recovery_target": 50,
+  "autonomous_weight_rested": 0.28,
+  "autonomous_weight_low": 0.60,
+  "autonomous_weight_critical": 0.90
+}
+```
+
+A taxa vem da suposição **S-1** do `MVP_SPEC.md`; o ponto em aberto **A-3** pedia exatamente esta etapa para validá-la. Todos os valores são provisórios e ficam em dados — **nenhum deles aparece em script**. Os três pesos entraram aqui pelo mesmo motivo: a §14 proíbe balanceamento fixo no código.
+
+O carregador recusa, com mensagem específica: taxa zero ou negativa, limiares fora de `0..max_energy`, alvo menor ou igual ao limiar baixo, pesos fora de `[0, 1]`, pesos que não cresçam conforme a energia cai, campo ausente e tipo errado.
+
+### Recuperação de energia
+
+```text
+energia = ⌊ segundos acumulados em RESTING ÷ (60 ÷ energy_per_minute) ⌋
+```
+
+Com a configuração atual: **1 ponto a cada 60 segundos**.
+
+A energia sobe **apenas** enquanto Caramelo está efetivamente em `RESTING`. Caminhar até a cadeira não conta, e `IDLE`, `WALKING`, `EATING`, `TRAINING` e `HAPPY` não recuperam nada — verificado por teste, dez minutos em cada um deles não movem a energia.
+
+**Acumulador fracionário.** O tempo é somado numa fração e só vira energia em unidades inteiras, então descansos curtos somam:
+
+```text
+30 s + 20 s + 10 s  =  +1 energia
+```
+
+A fração sobrevive entre descansos **durante a mesma execução** — sair de `RESTING` não a descarta. Ela não é persistida: fechar o jogo a perde, como todo o resto até a Etapa 10.
+
+Regras de borda:
+
+* Delta zero ou negativo não recupera nada e não mexe no acumulador.
+* Um delta grande aplica a quantidade correta de uma vez (605 s → +10, sobrando 5 s).
+* A energia nunca passa de `max_energy`.
+* **Saturar não deixa crédito escondido:** se a energia enche no meio de um intervalo, o excedente daquele período é descartado. Quarenta minutos de descanso a partir de 70 creditam 30, não 40.
+* Com energia cheia, nenhum sinal redundante é emitido.
+
+### Descanso solicitado
+
+`RestSystem.request_rest()` manda Caramelo até o `RestPoint` `(1217.2, 734.6)`, à frente da cadeira plástica — o local que o `MVP_SPEC.md` §10 descreve para `RESTING`. **A coordenada não mudou.**
+
+Aceitar significa só que ele foi mandado para lá: ele caminha, para no ponto e **só então** entra em `RESTING` e começa a recuperar. A reserva é liberada ao terminar.
+
+`RESTING` continua **interrompível**, como manda a especificação — não virou estado bloqueado.
+
+Não há botão na interface: a API existe para a Etapa 9 usar.
+
+### Descanso autônomo
+
+Continua acontecendo sozinho, mas agora a chance depende da energia. O peso é interpolado linearmente entre os três valores do JSON:
+
+```text
+energia ≥ 50 (alvo)          →  0,28   descanso ocasional
+30 ≤ energia < 50            →  0,28 … 0,60, crescendo conforme cai
+energia < 30 (limiar baixo)  →  0,60 … 0,90, até a energia zerar
+```
+
+| Energia | Peso | Descansos observados |
+| ------: | ---: | -------------------: |
+| 80 | 0,28 | 23% das decisões |
+| 40 | 0,44 | 31% |
+| 10 | 0,80 | 44% |
+
+Quem calcula é o `RestSystem`, a partir da energia; ele entrega o número pronto a Caramelo por `set_rest_tendency`. **Caramelo nunca consulta o modelo** — a separação da Etapa 5 continua valendo.
+
+O peso é só a chance do sorteio. Logo depois de um descanso, o próximo passo é sempre caminhar, então mesmo com energia no chão o descanso fica em 44% das decisões e nunca encadeia: medido em 10 minutos com a energia em 5, **zero descansos seguidos**, e ele volta a caminhar e a ficar ocioso normalmente. Energia baixa aumenta a tendência sem congelar o personagem, e **nunca** interrompe ou rouba o destino de uma refeição ou treino em andamento.
+
+### Cinco microcomportamentos ociosos
+
+Dentro de `IDLE`, Caramelo alterna entre cinco poses curtas (1,2 a 2,6 s cada):
+
+| Comportamento | O que faz |
+| ------------- | --------- |
+| `LOOK_AROUND` | Vira a cabeça devagar de um lado a outro |
+| `STRETCH` | Alonga o corpo para a frente e abaixa a frente |
+| `SNIFF_GROUND` | Abaixa o focinho até o chão e fareja |
+| `TAIL_WAG` | Abana o rabo rápido, com um leve requebrado |
+| `CHASE_FLY` | Pula atrás de uma mosca imaginária |
+
+**Não são estados públicos:** não entram na matriz de transições, não alteram atributo algum, não reservam atividade e não aparecem fora de `IDLE`. Uma atividade aceita encerra o microcomportamento na hora.
+
+Eles cobrem quatro dos cinco comportamentos autônomos do `MVP_SPEC.md` §9 — sentar e observar, alongar-se, farejar e perseguir a mosca. O quinto da spec, *caminhar até um ponto aleatório*, já é o estado `WALKING`; `TAIL_WAG` entrou no lugar dele como quinta pose parada.
+
+`CHASE_FLY` desloca **apenas o nó visual**, em poucos pixels: a posição lógica de Caramelo não muda, então ele nunca sai da área caminhável por causa disso.
+
+O mesmo comportamento nunca é escolhido duas vezes seguidas — e a regra vale também entre duas ociosidades separadas por uma caminhada. O sorteio usa o gerador próprio de Caramelo, então uma semente fixa reproduz a sequência inteira.
+
+```gdscript
+signal idle_behavior_changed(previous_behavior: int, new_behavior: int)
+```
+
+É informativo: sai também ao entrar e sair de `IDLE`, com `IdleBehavior.NONE` de um dos lados, e não move jogabilidade alguma.
+
+### Visual do descanso
+
+Corpo achatado no chão, respiração ampla e lenta, cabeça baixa e **olho quase fechado**. Intensidade deliberadamente baixa: o jogo passa horas visível como papel de parede. A recuperação de energia não depende da animação estar à vista — ela acontece na simulação, não no desenho.
+
+### Sinais e sua ordem
+
+```gdscript
+signal rest_requested()
+signal rest_rejected(reason: int)
+signal rest_started()
+signal rest_energy_restored(amount: int)
+signal rest_completed()
+```
+
+Ordem efetiva de um ponto recuperado:
+
+```text
+state_changed(… → RESTING)
+rest_started                      uma vez por entrada
+  … 60 s acumulados …
+energy_changed                    do modelo
+rest_energy_restored              do sistema, só quando a energia realmente sobe
+  … ao sair …
+state_changed(RESTING → IDLE)
+rest_completed                    uma vez por saída
+```
+
+`rest_requested` sai **apenas** no pedido explícito. O descanso autônomo emite `rest_started` e `rest_completed`, mas nunca `rest_requested`.
+
+### Códigos de rejeição
+
+Enum `RestSystem.Rejection`, estável:
+
+| Código | Quando |
+| ------ | ------ |
+| `NOT_CONFIGURED` | dependências ainda não entregues |
+| `POINT_NOT_FOUND` | `RestPoint` ausente da cena |
+| `DOG_BUSY` | Caramelo em `EATING` ou `TRAINING` |
+| `ACTIVITY_RESERVED` | já há refeição, treino ou descanso reservado |
+| `DOG_REFUSED` | Caramelo recusou por outro motivo |
+
+A exclusão mútua continua baseada na **reserva única de Caramelo**: `RestSystem`, `FeedingSystem` e `ExerciseSystem` não se conhecem.
+
 ## Estrutura da cena principal
 
 ```text
 Main                    (Node)
 ├── GameSession         (Node)        ← configuração, modelo e resolução de referências
 │   ├── FeedingSystem   (Node)        ← refeição: pedido, recompensa e recargas
-│   └── ExerciseSystem  (Node)        ← treino: pedido, débito, recompensa e reação
+│   ├── ExerciseSystem  (Node)        ← treino: pedido, débito, recompensa e reação
+│   └── RestSystem      (Node)        ← descanso: recuperação e tendência autônoma
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
 │       ├── Background        (Sprite2D)     z = -100
@@ -827,6 +976,9 @@ godot --headless --path . --script tests/test_feeding_system.gd
 
 # sistema de exercícios — 141 verificações
 godot --headless --path . --script tests/test_exercise_system.gd
+
+# descanso e comportamento ocioso — 126 verificações
+godot --headless --path . --script tests/test_rest_and_idle.gd
 ```
 
 **`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
@@ -836,6 +988,8 @@ godot --headless --path . --script tests/test_exercise_system.gd
 **`test_feeding_system.gd`** cobre o pedido e as seis formas de recusa, o direcionamento ao `FoodPoint`, a recompensa só na conclusão e exatamente uma vez, sinais duplicados, conclusões de outra atividade, o teto de energia, a ordem obrigatória dos efeitos, recargas independentes vindas do JSON, a frequência de `cooldown_changed`, `activity_completed`, o pote e o menu na cena, e a ausência de recompensa sem ação do jogador.
 
 **`test_exercise_system.gd`** cobre os dois exercícios e seus números vindos do JSON, os dois pontos distintos e a ausência do marcador antigo, os hotspots, o bloqueio por nível nos níveis 1, 2 e 3, as dez formas de recusa, o débito só na entrada e uma única vez, a falha defensiva de débito, as durações de 20 s e 30 s simuladas, a recompensa só na conclusão e uma única vez, a subida de nível pelo próprio treino, a exclusão mútua nos dois sentidos, a reação cômica com semente fixa e as poses distintas com o halter provisório.
+
+**`test_rest_and_idle.gd`** cobre a seção `rest` e onze formas de configuração inválida, o acumulador fracionário (59 s nada, o segundo restante +1, descansos separados somando), a ausência de recuperação nos outros cinco estados, deltas inválidos, saturação sem crédito oculto, o descanso solicitado com suas cinco recusas, a tendência crescente por faixa de energia, a garantia de não encadear descansos, os cinco microcomportamentos com sorteio reprodutível e o deslocamento apenas visual de `CHASE_FLY`.
 
 Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
 
@@ -906,6 +1060,20 @@ Durante um treino, o pote recusa qualquer alimento, e vice-versa. Nenhum pedido 
 
 Verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: a faixa de feedback mantém ~277 × 37 px de tela e nunca sai do enquadramento.
 
+### Descanso e ociosidade
+
+Deixe rodando alguns minutos, sem clicar em nada:
+
+1. Parado, ele alterna entre os cinco microcomportamentos — olhar em volta, se alongar, farejar o chão, abanar o rabo e pular atrás de uma mosca. **Nunca repete o mesmo duas vezes seguidas.**
+2. De tempos em tempos escolhe um ponto e caminha até lá, sem tremor.
+3. De vez em quando deita: corpo achatado no chão, respiração lenta, olho quase fechado.
+4. **A energia só sobe enquanto ele está deitado**, +1 por minuto. Em qualquer outro estado ela fica parada.
+5. Depois de descansar ele sempre volta a caminhar — não encadeia descansos.
+6. Alimente-o ou mande treinar: a atividade tem prioridade e o descanso nunca a interrompe.
+7. Com a energia baixa, ele passa a escolher descansar com mais frequência, mas continua andando e fazendo as poses ociosas.
+
+Verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: ele deita no mesmo ponto, à frente da cadeira, e a energia sobe igual.
+
 ### Área caminhável
 
 Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sobre o piso, o que deixa ver que Caramelo nunca o atravessa:
@@ -922,17 +1090,15 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scripts/systems/exercise_system.gd`: o ciclo do treino — pedido, débito na entrada, recompensa na conclusão e reação cômica.
-* `scenes/environment/equipment_hotspot.tscn` + `scripts/environment/equipment_hotspot.gd`: cena reutilizável de área clicável sobre o equipamento pintado.
-* `scenes/ui/training_feedback.tscn` + `scripts/ui/training_feedback.gd`: a faixa de feedback contextual.
-* `tests/test_exercise_system.gd`: 141 verificações permanentes.
-* `scripts/dog/caramelo.gd`: ganhou `activity_started`, a **reserva de atividade** (fonte única da exclusão mútua), duração de atividade vinda de dados, estilo de treino e `cancel_reserved_activity`.
-* `scripts/dog/caramelo_visual.gd` e `scenes/dog/caramelo.tscn`: poses de flexão e halteres, o halter provisório e a variação cômica de `HAPPY`.
-* `scripts/systems/feeding_system.gd`: nova recusa `ACTIVITY_RESERVED`.
-* `scripts/systems/game_session.gd` e `scripts/environment/backyard.gd`: resolvem os dois marcadores e os dois hotspots.
-* `scenes/environment/backyard.tscn` e `scenes/main/main.tscn`: `TrainingPoint` removido, dois marcadores e dois hotspots no lugar, mais o sistema e a faixa de feedback.
+* `scripts/systems/rest_system.gd`: recuperação de energia com acumulador fracionário, descanso solicitado e cálculo da tendência autônoma.
+* `tests/test_rest_and_idle.gd`: 126 verificações permanentes.
+* `data/levels.json`: nova seção `rest` com taxa, limiares e os três pesos.
+* `scripts/systems/game_config.gd`: validação estrita dessa seção e acessor `get_rest()`.
+* `scripts/dog/caramelo.gd`: os cinco microcomportamentos de `IDLE` com o sinal `idle_behavior_changed`, e `set_rest_tendency`, que substitui a chance fixa de descanso.
+* `scripts/dog/caramelo_visual.gd`: as cinco poses ociosas e o descanso com olho fechado.
+* `scripts/systems/game_session.gd` e `scenes/main/main.tscn`: o `RestSystem`, resolvido e configurado como os outros.
 
-Em `data/exercises.json` mudou **só** o campo `training_point`, de `TrainingPoint` para `PushUpsPoint` e `DumbbellsPoint`. Nenhum valor de balanceamento foi tocado.
+`data/foods.json`, `data/exercises.json`, o asset do quintal e as posições dos marcadores **não foram tocados**.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -961,9 +1127,17 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **O menu não mostra energia nem vínculo atuais.** Ele lista só o que cada alimento dá. As barras permanentes são o HUD da Etapa 9.
 * **Valores provisórios.** As recargas de 5, 15 e 10 min seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
 
+### Descanso e ociosidade
+
+* **Nada é persistido.** O acumulador fracionário e a energia vivem só nesta execução. O `MVP_SPEC.md` §17 exige recuperação também com o jogo fechado — isso é da Etapa 10.
+* **Sem botão de descanso.** `request_rest()` existe e está testado, mas nenhuma interface o chama: o botão é do HUD da Etapa 9.
+* **A taxa de 1/min nunca foi medida em uso real.** Continua sendo a suposição S-1; o ponto em aberto A-3 pede playtest.
+* **A pose de descanso é a mesma em qualquer lugar.** Ele deita igual no `RestPoint` e onde estiver quando descansa sozinho — não há pose específica encostada na cadeira.
+* **Os microcomportamentos são poses, não animações.** São funções contínuas do tempo sobre os mesmos polígonos, como o resto da arte provisória.
+* **`CHASE_FLY` não tem mosca.** O deslocamento sugere a perseguição; não há objeto algum desenhado.
+
 ### Treino
 
-* **Sem descanso com recuperação.** `RESTING` existe e é usado pelo comportamento autônomo, mas não devolve energia. Sem comer, Caramelo acaba sem poder treinar — a recuperação passiva é da Etapa 8.
 * **A reação cômica reaproveita `HAPPY`.** É uma variação exagerada da mesma pose, não uma animação própria.
 * **O halter provisório é geométrico**, como o resto de Caramelo, e só aparece durante o exercício dos halteres.
 * **Sem cancelamento.** Depois de aceito, o treino vai até o fim: `TRAINING` é não interrompível por especificação.

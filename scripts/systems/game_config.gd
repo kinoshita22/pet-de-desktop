@@ -27,6 +27,7 @@ var errors: PackedStringArray = PackedStringArray()
 
 var _max_level: int = 0
 var _initial_attributes: Dictionary = {}
+var _rest: Dictionary = {}
 var _levels: Array[Dictionary] = []
 var _bond_behaviors: Array[Dictionary] = []
 var _foods: Array[Dictionary] = []
@@ -94,6 +95,12 @@ func get_max_level() -> int:
 
 func get_initial_attributes() -> Dictionary:
 	return _initial_attributes.duplicate(true) if is_valid else {}
+
+
+## Parametros do descanso: taxa de recuperacao, limiares de energia e os pesos da
+## tendencia de descanso autonomo.
+func get_rest() -> Dictionary:
+	return _rest.duplicate(true) if is_valid else {}
 
 func get_levels() -> Array[Dictionary]:
 	if not is_valid:
@@ -179,6 +186,7 @@ func _build(levels: Variant, foods: Variant, exercises: Variant) -> void:
 		_exercises_by_id.clear()
 		_unlock_level.clear()
 		_initial_attributes.clear()
+		_rest.clear()
 		_max_level = 0
 
 
@@ -263,6 +271,10 @@ func _parse_levels(source: Variant) -> Dictionary:
 	if not (attributes_raw is Dictionary):
 		_fail("levels.json: 'initial_attributes' deve ser um objeto.")
 		attributes_raw = null
+	var rest_raw: Variant = data.get("rest")
+	if not (rest_raw is Dictionary):
+		_fail("levels.json: 'rest' deve ser um objeto.")
+		rest_raw = null
 	var entries: Variant = _array_field(data, "strength_levels", "levels.json")
 	var behaviors: Variant = _array_field(data, "bond_behaviors", "levels.json")
 
@@ -289,6 +301,11 @@ func _parse_levels(source: Variant) -> Dictionary:
 				"energy": int(energy), "max_energy": int(max_energy),
 				"strength": int(strength), "bond": int(bond),
 			}
+
+	# --- descanso ---
+	if rest_raw != null:
+		_parse_rest(rest_raw as Dictionary,
+			int(_initial_attributes.get("max_energy", 0)))
 
 	# --- tabela de forca ---
 	var seen_levels: Dictionary = {}
@@ -395,6 +412,54 @@ func _parse_levels(source: Variant) -> Dictionary:
 				"display_name": String(display_name),
 			})
 	return bond_ids
+
+
+## Valida a secao de descanso. `max_energy` vem dos valores iniciais e delimita os dois
+## limiares; se ele nao pode ser lido, a checagem de faixa e omitida (o erro ja foi
+## registrado ao ler `initial_attributes`).
+func _parse_rest(rest: Dictionary, max_energy: int) -> void:
+	var where := "levels.json/rest"
+	var rate: Variant = _float_field(rest, "energy_per_minute", where)
+	var low: Variant = _int_field(rest, "low_energy_threshold", where)
+	var target: Variant = _int_field(rest, "preferred_recovery_target", where)
+	var weights: Array = []
+	for key in ["autonomous_weight_rested", "autonomous_weight_low", "autonomous_weight_critical"]:
+		var weight: Variant = _float_field(rest, key, where)
+		if weight != null and (float(weight) < 0.0 or float(weight) > 1.0):
+			_fail("%s: '%s' deve estar entre 0 e 1, veio %s." % [where, key, weight])
+			weight = null
+		weights.append(weight)
+	if rate != null and float(rate) <= 0.0:
+		_fail("%s: 'energy_per_minute' deve ser positiva, veio %s." % [where, rate])
+		rate = null
+	if max_energy > 0:
+		if low != null and (int(low) < 0 or int(low) > max_energy):
+			_fail("%s: 'low_energy_threshold' (%d) precisa estar entre 0 e max_energy (%d)."
+				% [where, low, max_energy])
+			low = null
+		if target != null and (int(target) < 0 or int(target) > max_energy):
+			_fail("%s: 'preferred_recovery_target' (%d) precisa estar entre 0 e max_energy (%d)."
+				% [where, target, max_energy])
+			target = null
+	if low != null and target != null and int(target) <= int(low):
+		_fail("%s: 'preferred_recovery_target' (%d) precisa ser maior que 'low_energy_threshold' (%d)."
+			% [where, target, low])
+		return
+	if weights[0] != null and weights[1] != null and weights[2] != null \
+			and not (float(weights[0]) <= float(weights[1]) and float(weights[1]) <= float(weights[2])):
+		_fail("%s: os pesos precisam crescer conforme a energia cai (rested <= low <= critical), vieram %s."
+			% [where, str(weights)])
+		return
+	if rate == null or low == null or target == null or weights.has(null):
+		return
+	_rest = {
+		"energy_per_minute": float(rate),
+		"low_energy_threshold": int(low),
+		"preferred_recovery_target": int(target),
+		"autonomous_weight_rested": float(weights[0]),
+		"autonomous_weight_low": float(weights[1]),
+		"autonomous_weight_critical": float(weights[2]),
+	}
 
 
 func _parse_foods(source: Variant) -> void:

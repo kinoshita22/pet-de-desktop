@@ -18,6 +18,7 @@ var _config: GameConfig
 var _model: ProgressionModel
 var _feeding: FeedingSystem
 var _exercise: ExerciseSystem
+var _rest: RestSystem
 var _dog: Caramelo
 var _food_point: Marker2D
 
@@ -76,6 +77,13 @@ func _wire_dependencies() -> void:
 	for hotspot in hotspots:
 		_exercise.attach_hotspot(hotspot)
 
+	_rest = _find_descendant(self, func(node: Node) -> bool: return node is RestSystem) as RestSystem
+	if _rest == null:
+		push_error("GameSession: nenhum RestSystem entre os filhos.")
+		return
+	var training_points := _collect_training_points(scope)
+	_rest.configure(_config, _model, _dog, training_points.get(&"RestPoint"))
+
 
 ## Marcadores de treino, por nome, ja no espaco de coordenadas de Caramelo. O sistema de
 ## exercicios recebe o mapa pronto e nunca procura nada na arvore.
@@ -124,6 +132,10 @@ func get_feeding_system() -> FeedingSystem:
 
 func get_exercise_system() -> ExerciseSystem:
 	return _exercise
+
+
+func get_rest_system() -> RestSystem:
+	return _rest
 
 
 func get_caramelo() -> Caramelo:

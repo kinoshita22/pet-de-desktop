@@ -44,6 +44,16 @@
     }
   ],
 
+  "rest": {
+    "_comment": "Descanso. Fonte: MVP_SPEC.md secao 11 e suposicao S-1 (+1 de energia por minuto). Valores provisorios: o ponto em aberto A-3 pede validacao em uso real. Os tres pesos governam a tendencia de descanso autonomo por faixa de energia.",
+    "energy_per_minute": 1,
+    "low_energy_threshold": 30,
+    "preferred_recovery_target": 50,
+    "autonomous_weight_rested": 0.28,
+    "autonomous_weight_low": 0.60,
+    "autonomous_weight_critical": 0.90
+  },
+
   "bond_behaviors": [
     { "id": "petting_reaction", "required_bond": 10, "display_name": "Reacao ao carinho" },
     { "id": "startup_celebration", "required_bond": 25, "display_name": "Comemoracao especial ao iniciar o jogo" },

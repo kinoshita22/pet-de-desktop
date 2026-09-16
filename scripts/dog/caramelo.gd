@@ -25,6 +25,11 @@ signal activity_completed(activity: int)
 ## para um pedido recusado. E o gancho por onde um sistema cobra o custo da atividade.
 signal activity_started(activity: int)
 
+## Emitido a cada troca de microcomportamento ocioso, inclusive ao entrar e sair de
+## `IDLE` (com `IdleBehavior.NONE` de um dos lados). E informativo: nao altera atributo,
+## nao reserva atividade e nao deve mover jogabilidade alguma.
+signal idle_behavior_changed(previous_behavior: int, new_behavior: int)
+
 enum State { IDLE, WALKING, EATING, TRAINING, RESTING, HAPPY }
 
 ## Estados que `request_activity` aceita e que, ao terminar sozinhos, emitem
@@ -47,6 +52,20 @@ const UNINTERRUPTIBLE: Array = [State.EATING, State.TRAINING]
 
 const STATE_NAMES: Array = ["IDLE", "WALKING", "EATING", "TRAINING", "RESTING", "HAPPY"]
 
+## Microcomportamentos visuais de `IDLE`. **Nao sao estados publicos**: nao entram na
+## matriz de transicoes, nao mudam atributo e nao reservam atividade. Cobrem quatro dos
+## cinco comportamentos autonomos do `MVP_SPEC.md` secao 9 — o quinto, caminhar ate um
+## ponto aleatorio, ja e o estado `WALKING`.
+enum IdleBehavior { NONE = -1, LOOK_AROUND = 0, STRETCH = 1, SNIFF_GROUND = 2, TAIL_WAG = 3, CHASE_FLY = 4 }
+
+const IDLE_BEHAVIOR_NAMES: Array = [
+	"LOOK_AROUND", "STRETCH", "SNIFF_GROUND", "TAIL_WAG", "CHASE_FLY",
+]
+
+## Cada microcomportamento dura pouco, para que varios apareçam numa mesma ociosidade,
+## sem virar agitacao — o `MVP_SPEC.md` secao 9 pede um cenario calmo.
+const IDLE_BEHAVIOR_DURATION := Vector2(1.2, 2.6)
+
 ## Duracoes de reserva, em segundos. Valem apenas quando ninguem informa a duracao da
 ## atividade por `set_activity_duration` — por exemplo ao chamar `request_state` direto.
 ## Comer e a reacao feliz seguem a suposicao S-4 do `MVP_SPEC.md`. A duracao real de cada
@@ -56,7 +75,10 @@ const TRAINING_DURATION := 6.0
 const HAPPY_DURATION := 2.0
 const IDLE_DURATION := Vector2(2.5, 6.0)
 const REST_DURATION := Vector2(7.0, 14.0)
-const WALK_PROBABILITY := 0.72
+## Peso de reserva do descanso autonomo, usado enquanto ninguem informar a tendencia por
+## `set_rest_tendency`. Quem calcula a tendencia real e o sistema de descanso, a partir
+## da energia — Caramelo nao conhece atributo algum.
+const DEFAULT_REST_TENDENCY := 0.28
 
 const WALK_SPEED := 130.0
 ## Distancia minima da borda do poligono. Mantem as patas — e a origem do no — dentro
@@ -77,6 +99,15 @@ var _state_elapsed := 0.0
 var _state_duration := 0.0
 var _decision_elapsed := 0.0
 var _decision_duration := 0.0
+var _idle_behavior: int = IdleBehavior.NONE
+## Ultimo microcomportamento realmente escolhido. Diferente de `_idle_behavior`, ele
+## sobrevive a saida de `IDLE`, para que a regra de nao repetir valha tambem entre duas
+## ociosidades separadas por uma caminhada.
+var _last_idle_behavior: int = IdleBehavior.NONE
+var _idle_behavior_elapsed := 0.0
+var _idle_behavior_duration := 0.0
+## Probabilidade de o proximo sorteio autonomo escolher descansar. Chega pronta de fora.
+var _rest_tendency := DEFAULT_REST_TENDENCY
 
 var _waypoints: PackedVector2Array = PackedVector2Array()
 var _pending_activity: int = -1
@@ -245,6 +276,28 @@ func set_activity_duration(activity: int, seconds: float) -> void:
 		_activity_durations.erase(activity)
 
 
+## Tendencia de descanso autonomo, de 0 a 1: com que probabilidade o proximo sorteio
+## escolhe descansar em vez de caminhar. Quem calcula e o sistema de descanso, a partir da
+## energia; Caramelo so recebe o numero pronto e nunca consulta o modelo.
+func set_rest_tendency(weight: float) -> void:
+	_rest_tendency = clampf(weight, 0.0, 1.0)
+
+
+func get_rest_tendency() -> float:
+	return _rest_tendency
+
+
+## Microcomportamento ocioso em execucao, ou `IdleBehavior.NONE` fora de `IDLE`.
+func get_idle_behavior() -> int:
+	return _idle_behavior
+
+
+static func idle_behavior_name(behavior: int) -> String:
+	if behavior < 0 or behavior >= IDLE_BEHAVIOR_NAMES.size():
+		return "NONE"
+	return IDLE_BEHAVIOR_NAMES[behavior]
+
+
 ## Estilo visual do proximo treino. Puramente cosmetico.
 func set_training_style(style: StringName) -> void:
 	_training_style = style
@@ -267,6 +320,10 @@ func set_random_seed(value: int) -> void:
 	_seed_is_fixed = true
 	if _state == State.IDLE:
 		_reset_idle_timer()
+		# O microcomportamento em curso foi sorteado antes da semente; refaze-lo aqui e o
+		# que torna toda a sequencia seguinte reproduzivel.
+		_last_idle_behavior = IdleBehavior.NONE
+		_pick_idle_behavior()
 
 
 ## Recebe do ambiente a area caminhavel, ja no espaco de coordenadas do pai de Caramelo.
@@ -305,6 +362,9 @@ func simulate(delta: float) -> void:
 	_state_elapsed += step
 	match _state:
 		State.IDLE:
+			_idle_behavior_elapsed += step
+			if _idle_behavior_elapsed >= _idle_behavior_duration:
+				_pick_idle_behavior()
 			_decision_elapsed += step
 			if _decision_elapsed >= _decision_duration:
 				_decide_next_action()
@@ -370,6 +430,7 @@ func _enter_state(state: int) -> void:
 			_waypoints = PackedVector2Array()
 			_pending_activity = -1
 			_reset_idle_timer()
+			_pick_idle_behavior()
 		State.WALKING:
 			_rested_last = false
 		State.EATING:
@@ -393,6 +454,10 @@ func _enter_state(state: int) -> void:
 func _exit_state(state: int) -> void:
 	if state == State.WALKING:
 		velocity = Vector2.ZERO
+	if state == State.IDLE:
+		# Sair de `IDLE` encerra o microcomportamento — inclusive quando uma atividade
+		# aceita interrompe a ociosidade no meio.
+		_set_idle_behavior(IdleBehavior.NONE)
 
 
 ## Para onde cada estado com duracao vai sozinho ao terminar. Todos constam da matriz.
@@ -410,11 +475,38 @@ func _reset_idle_timer() -> void:
 	_decision_duration = _rng.randf_range(IDLE_DURATION.x, IDLE_DURATION.y)
 
 
+## Escolhe o proximo microcomportamento, nunca repetindo o anterior — a regra de
+## variedade da secao 9 do `MVP_SPEC.md`. Usa o gerador proprio de Caramelo, de modo que
+## uma semente fixa reproduz a sequencia inteira.
+func _pick_idle_behavior() -> void:
+	_idle_behavior_elapsed = 0.0
+	_idle_behavior_duration = _rng.randf_range(
+		IDLE_BEHAVIOR_DURATION.x, IDLE_BEHAVIOR_DURATION.y)
+	var count := IDLE_BEHAVIOR_NAMES.size()
+	var choice := _rng.randi_range(0, count - 1)
+	if choice == _last_idle_behavior:
+		# Desloca para um dos outros quatro, mantendo a escolha uniforme entre eles.
+		choice = (choice + 1 + _rng.randi_range(0, count - 2)) % count
+	_last_idle_behavior = choice
+	_set_idle_behavior(choice)
+
+
+func _set_idle_behavior(behavior: int) -> void:
+	if behavior == _idle_behavior:
+		return
+	var previous := _idle_behavior
+	_idle_behavior = behavior
+	if _visual != null and _visual.has_method("play_idle_behavior"):
+		_visual.call("play_idle_behavior", behavior)
+	idle_behavior_changed.emit(previous, behavior)
+
+
 ## Decisao autonoma tomada ao fim de cada espera ociosa. Nunca por quadro: o sorteio
 ## acontece em pontos discretos, o que evita tremores e trocas de estado frequentes.
 func _decide_next_action() -> void:
-	# O `or` curto-circuita: logo apos um descanso o sorteio nem acontece.
-	if _rested_last or _rng.randf() < WALK_PROBABILITY:
+	# O `or` curto-circuita: logo apos um descanso o sorteio nem acontece, e ele sai para
+	# caminhar. E o que impede descansos encadeados sem fim, mesmo com energia no chao.
+	if _rested_last or _rng.randf() >= _rest_tendency:
 		var destination: Variant = _pick_destination()
 		if destination is Vector2 and _start_walk_to(destination):
 			return
