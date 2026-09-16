@@ -50,6 +50,7 @@ class World:
 	var dog: Caramelo
 	var menu: Control
 	var bowl: Node2D
+	var exercise: ExerciseSystem
 
 	func _init(viewport: SubViewport) -> void:
 		main = (load("res://scenes/main/main.tscn") as PackedScene).instantiate()
@@ -59,6 +60,7 @@ class World:
 		dog = _find(main, func(n: Node) -> bool: return n is Caramelo) as Caramelo
 		bowl = _find(main, func(n: Node) -> bool: return n is FoodBowl) as Node2D
 		menu = _find(main, func(n: Node) -> bool: return n.is_in_group(&"food_menu")) as Control
+		exercise = _find(main, func(n: Node) -> bool: return n is ExerciseSystem) as ExerciseSystem
 		model = session.get_model()
 		dog.set_physics_process(false)
 		feeding.set_process(false)
@@ -106,6 +108,7 @@ func _process(_delta: float) -> bool:
 	_test_cooldowns()
 	_test_dog_states()
 	_test_scene_and_ui()
+	_test_mutual_exclusion()
 
 	_viewport.free()
 	_report()
@@ -506,6 +509,67 @@ func _test_scene_and_ui() -> void:
 	_check(w2.model.get_strength() == 0 and w2.model.get_level() == 1, "forca e nivel intactos")
 	_check(not w2.feeding.has_pending_meal(), "nenhuma refeicao surgiu sozinha")
 	w2.free_all()
+
+
+# --------------------------------------------------------------------------------------
+# Exclusao mutua com o treino (Etapa 7)
+# --------------------------------------------------------------------------------------
+
+func _test_mutual_exclusion() -> void:
+	_g("Exclusao mutua: um treino em curso bloqueia a alimentacao")
+	var w := _world()
+	var spy := Spy.new()
+	w.feeding.feeding_rejected.connect(spy.on_rejected)
+	_check(w.exercise.request_exercise(&"push_ups"), "treino aceito")
+	_check(w.dog.has_reserved_activity(), "Caramelo com atividade reservada")
+	_check(not w.feeding.request_feeding(&"kibble"),
+		"alimentacao recusada enquanto ele caminha para o equipamento")
+	_check(spy.events[-1][2] == "ACTIVITY_RESERVED", "codigo = %s" % spy.events[-1][2])
+	_check(not w.feeding.has_pending_meal(), "nenhuma refeicao pendente foi criada")
+	_check(w.model.get_energy() == 70, "energia intacta: %d" % w.model.get_energy())
+
+	for _i in 5400:
+		if w.dog.get_current_state() == Caramelo.State.TRAINING:
+			break
+		w.dog.simulate(STEP)
+	_check(w.dog.get_current_state() == Caramelo.State.TRAINING, "treino em execucao")
+	_check(not w.feeding.request_feeding(&"chicken_rice"), "alimentacao recusada durante TRAINING")
+	_check(spy.events[-1][2] == "DOG_BUSY", "codigo = %s" % spy.events[-1][2])
+	_check(w.exercise.get_pending_exercise() == &"push_ups", "o treino nao foi substituido")
+
+	for _i in 5400:
+		if not w.exercise.has_pending_exercise():
+			break
+		w.dog.simulate(STEP)
+	_check(not w.dog.has_reserved_activity(), "reserva liberada ao terminar o treino")
+	_check(w.feeding.request_feeding(&"kibble"), "alimentacao volta a ser aceita")
+	_check(w.finish_meal(), "e a refeicao conclui normalmente")
+	_check(w.model.get_bond() == 1, "vinculo creditado: %d" % w.model.get_bond())
+
+	_g("Exclusao mutua: uma refeicao em curso bloqueia o treino")
+	var w2 := _world()
+	var spy2 := Spy.new()
+	w2.exercise.exercise_rejected.connect(func(id: StringName, reason: int) -> void:
+		spy2.events.append(["rejected", String(id), ExerciseSystem.rejection_name(reason)]))
+	_check(w2.feeding.request_feeding(&"kibble"), "refeicao aceita")
+	_check(not w2.exercise.request_exercise(&"push_ups"), "treino recusado a caminho do pote")
+	_check(spy2.events[-1][2] == "ACTIVITY_RESERVED", "codigo = %s" % spy2.events[-1][2])
+	_check(w2.feeding.get_pending_food() == &"kibble", "refeicao intacta")
+
+	var reached := false
+	for _i in 5400:
+		if w2.dog.get_current_state() == Caramelo.State.EATING:
+			reached = true
+			break
+		w2.dog.simulate(STEP)
+	_check(reached, "Caramelo chegou ao pote")
+	_check(not w2.exercise.request_exercise(&"push_ups"), "treino recusado durante EATING")
+	_check(spy2.events[-1][2] == "DOG_BUSY", "codigo = %s" % spy2.events[-1][2])
+	_check(not w2.exercise.has_pending_exercise(), "nenhum treino em fila")
+	_check(w2.finish_meal(), "refeicao conclui")
+	_check(w2.model.get_strength() == 0, "nenhuma forca concedida: %d" % w2.model.get_strength())
+	w2.free_all()
+	w.free_all()
 
 
 func _report() -> void:

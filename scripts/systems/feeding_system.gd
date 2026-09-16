@@ -21,12 +21,14 @@ enum Rejection {
 	UNKNOWN_FOOD,     ## identificador ausente de foods.json
 	ON_COOLDOWN,      ## aquele alimento ainda esta em recarga
 	MEAL_PENDING,     ## ja existe uma refeicao a caminho
-	DOG_BUSY,         ## Caramelo esta em atividade nao interrompivel
-	DOG_REFUSED,      ## Caramelo recusou o pedido por outro motivo
+	DOG_BUSY,          ## Caramelo esta em atividade nao interrompivel
+	DOG_REFUSED,       ## Caramelo recusou o pedido por outro motivo
+	ACTIVITY_RESERVED, ## Caramelo ja tem outra atividade reservada (ex.: um treino)
 }
 
 const REJECTION_NAMES: Array = [
 	"NOT_CONFIGURED", "UNKNOWN_FOOD", "ON_COOLDOWN", "MEAL_PENDING", "DOG_BUSY", "DOG_REFUSED",
+	"ACTIVITY_RESERVED",
 ]
 
 ## Emitido quando o pote e selecionado. A interface escuta isto para abrir o menu; o
@@ -156,6 +158,11 @@ func request_feeding(food_id: StringName) -> bool:
 		return _reject(food_id, Rejection.ON_COOLDOWN)
 	if not _dog.is_interruptible():
 		return _reject(food_id, Rejection.DOG_BUSY)
+	# A reserva mantida em Caramelo e a fonte unica da disputa entre atividades: e assim
+	# que um treino em andamento bloqueia a alimentacao, sem que os dois sistemas precisem
+	# conhecer um ao outro.
+	if _dog.has_reserved_activity():
+		return _reject(food_id, Rejection.ACTIVITY_RESERVED)
 
 	# Marca a pendencia antes de pedir, para que um sinal de conclusao disparado no mesmo
 	# quadro ja encontre a refeicao registrada.

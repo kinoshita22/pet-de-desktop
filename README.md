@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 6 de 12 — Sistema de alimentação.** O primeiro ciclo funcional está de pé: clicar no pote abre um menu com os três alimentos, Caramelo caminha até o pote, come, e só então ganha energia e vínculo — com recarga própria por alimento. **Treino, carinho, HUD, salvamento e progresso offline continuam fora.**
+**Etapa 7 de 12 — Sistema de exercícios.** Os dois ciclos funcionais estão de pé. Além de comer, Caramelo agora treina: clicar nas barras de flexão ou nos halteres o leva ao equipamento certo, a energia sai ao começar, a força entra ao terminar e o nível sobe sozinho. Halteres liberam no nível 3. **Carinho, descanso com recuperação, HUD, salvamento e progresso offline continuam fora.**
 
 ## Requisitos
 
@@ -97,10 +97,11 @@ Três `Marker2D` sob `InteractionPoints`. Eles apenas marcam posições: não ex
 | Marcador | Posição (base 1920 × 1080) | Origem na arte | Por que ali |
 | -------- | -------------------------- | -------------- | ----------- |
 | `FoodPoint` | `(941.6, 792.1)` | `(820, 690)` | Piso aberto no centro, à frente do banco de concreto encostado no muro. O pote é um dos **únicos** elementos clicáveis do cenário (`MVP_SPEC.md` §6), então precisa de espaço livre em volta, longe dos equipamentos e da vegetação |
-| `TrainingPoint` | `(689.0, 746.1)` | `(600, 650)` | Junto à academia improvisada da esquerda — banco, barra e halteres. Fica no piso livre entre os pés do banco e os halteres, de onde Caramelo alcança o equipamento |
+| `PushUpsPoint` | `(1580, 845)` | `(1376, 736)` | Entre as barras de flexão, à direita. Caramelo fica no meio delas, e as barras seguem visíveis dos dois lados |
+| `DumbbellsPoint` | `(620, 770)` | `(540, 670)` | Junto à academia improvisada da esquerda — banco, barra e halteres —, com os pesos do chão à vista |
 | `RestPoint` | `(1217.2, 734.6)` | `(1060, 640)` | À frente da cadeira plástica branca, exatamente o local que o `MVP_SPEC.md` §10 descreve para o estado `RESTING` ("deitado no chão ou perto da cadeira de plástico") |
 
-Os três estão dentro da área caminhável, têm posições distintas (a menor distância entre eles é 257 px) e permanecem visíveis na tela nas cinco resoluções validadas.
+Os quatro estão dentro da área caminhável, têm posições distintas e permanecem visíveis na tela nas resoluções validadas. `PushUpsPoint` e `DumbbellsPoint` substituíram, na Etapa 7, o `TrainingPoint` único que existia aqui.
 
 ### Camadas
 
@@ -159,13 +160,13 @@ Os seis estados do `MVP_SPEC.md` §10, no enum `Caramelo.State`. Não há string
 | `IDLE` | Estado inicial; fim de qualquer outro | Espera sorteada de 2,5 a 6 s, ao fim da qual decide a próxima ação | Sim | Parado | Respiração leve, rabo lento |
 | `WALKING` | Ao receber um destino válido | Ao alcançar o destino | Sim — um novo comando substitui o destino | 130 px/s pelo trajeto | Balanço do corpo, patas alternadas, rabo no ritmo |
 | `EATING` | Ao chegar ao `FoodPoint` | 4 s (S-4) | **Não** | Parado | Cabeça abaixada ao chão, rabo rápido |
-| `TRAINING` | Ao chegar ao `TrainingPoint` | 6 s (marcador provisório) | **Não** | Parado | Corpo subindo e descendo |
+| `TRAINING` | Ao chegar ao ponto do exercício | duração vinda de `exercises.json` | **Não** | Parado | Flexões ou halteres, conforme o estilo |
 | `RESTING` | Comando, ou decisão autônoma | Sorteada de 7 a 14 s | Sim | Parado | Deita: encolhe até o chão, respiração ampla |
 | `HAPPY` | Fim de `EATING` ou `TRAINING`; comando | 2 s (S-4) | Sim | Parado | Pulinhos e rabo acelerado |
 
 Nenhum estado altera `energy`, `strength`, `bond` ou `level` — esses atributos não existem ainda. `EATING`, `TRAINING` e `HAPPY` rodam só o comportamento visual e terminam sozinhos, sem recompensa.
 
-As durações de comer e da reação feliz seguem a suposição **S-4** do `MVP_SPEC.md`. A do treino é um marcador: a duração real de cada exercício nasce de `data/exercises.json` na Etapa 5. **Nenhum valor aqui é balanceamento.**
+As durações de comer e da reação feliz seguem a suposição **S-4** do `MVP_SPEC.md`. A do treino **vem dos dados**: quem pede a atividade informa por quanto tempo ela dura, via `set_activity_duration`. As constantes do controlador só valem como reserva, quando ninguém informa nada. **Caramelo não conhece custo nem recompensa.**
 
 ### Matriz de transições
 
@@ -230,7 +231,7 @@ Assim Caramelo não procura nada por caminhos frágeis como `../../WorldBounds`,
 signal state_changed(previous_state: int, new_state: int)
 
 func request_state(new_state: int) -> bool        # transição direta; false quando recusada
-func request_activity(activity: int) -> bool      # caminha até o ponto e só então entra na atividade
+func request_activity(activity: int, target_override := Vector2.INF) -> bool
 func get_current_state() -> int
 func get_destination() -> Vector2                 # destino do trajeto; a própria posição se parado
 func is_interruptible() -> bool
@@ -320,7 +321,7 @@ Os nomes de exibição são em português; os IDs são técnicos e estáveis.
 ```jsonc
 { "id": "push_ups", "display_name": "Flexoes", "energy_cost": 15, "duration_seconds": 20,
   "strength_gain": 5, "required_level": 1, "unlock_id": "push_ups",
-  "training_point": "TrainingPoint", "comic_reaction_chance": 0.10 }
+  "training_point": "PushUpsPoint", "comic_reaction_chance": 0.10 }
 ```
 
 | ID | Energia | Duração | Força | Nível |
@@ -576,28 +577,193 @@ Main
     └── FoodMenu
 ```
 
+## Sistema de exercícios
+
+O segundo ciclo funcional. Diferente da alimentação, ele tem **dois momentos de efeito**: a energia sai ao começar, a força entra ao terminar.
+
+### Dois pontos de treino
+
+A arte tem dois conjuntos de equipamento, e a limitação do marcador único registrada nas Etapas 3 e 4 está resolvida. `TrainingPoint` foi **removido** — não ficou alias nem marcador morto — e em seu lugar entraram dois marcadores distintos em `InteractionPoints`:
+
+| Marcador | Coordenada (base 1920 × 1080) | Equipamento | Folga até a borda |
+| -------- | ----------------------------- | ----------- | ----------------: |
+| `PushUpsPoint` | `(1580, 845)` | Barras de flexão, à direita | 46 px |
+| `DumbbellsPoint` | `(620, 770)` | Banco e halteres, à esquerda | 111 px |
+
+Estão a **963 px** um do outro — não há como confundi-los. Ambos ficam dentro da área caminhável com folga maior que a margem do corpo, e todos os trajetos entre eles e os demais pontos são livres. Caramelo cobre parcialmente o equipamento, nunca por inteiro: nas flexões ele fica **entre** as barras, e nos halteres à frente do banco, com os pesos do chão visíveis.
+
+Em `data/exercises.json`, `training_point` deixou de ser o genérico `TrainingPoint` e passou a nomear cada marcador. **Nenhum valor de balanceamento mudou** — custo, duração, ganho, nível e chance seguem exatamente como na Etapa 5.
+
+### Hotspots
+
+Os equipamentos já estão pintados no fundo, então não há nada a redesenhar. [`EquipmentHotspot`](scripts/environment/equipment_hotspot.gd) é uma cena reutilizável que só ocupa a região correspondente e capta o clique:
+
+| Hotspot | Posição | Área |
+| ------- | ------- | ---- |
+| `PushUpsHotspot` | `(1580, 775)` | 215 × 130 |
+| `DumbbellsHotspot` | `(400, 745)` | 270 × 200 |
+
+Ficam em `PropsLayer`, acompanham a escala do quintal e, no hover, desenham um contorno claro e discreto — nada além disso. A `Area2D` tem `monitoring` e `monitorable` desligados: existe só para o clique e **não bloqueia Caramelo**.
+
+### Fluxo completo
+
+```text
+jogador clica no equipamento
+  └─ EquipmentHotspot.selected(exercise_id) → ExerciseSystem.request_exercise
+       ├─ recusa  → exercise_rejected(id, reason)      nada muda
+       └─ aceita  → reserva o exercício
+                    Caramelo.set_training_style(id)
+                    Caramelo.set_activity_duration(TRAINING, duração do JSON)
+                    Caramelo.request_activity(TRAINING, ponto do exercício)
+                    exercise_requested(id)
+Caramelo caminha até o marcador correto
+  └─ ao chegar: entra em TRAINING → activity_started(TRAINING)
+       └─ ExerciseSystem debita a energia  →  exercise_started(id, custo)
+Caramelo executa pela duração do JSON, parado no ponto
+  └─ ao terminar sozinho: activity_completed(TRAINING)
+       └─ força creditada → exercise_completed(id, ganho)
+          sorteio da reação cômica (depois da recompensa)
+```
+
+**A duração vem do dado, não de uma constante.** `ExerciseSystem` informa a Caramelo por quanto tempo executar; ele não conhece custo nem recompensa, só o tempo e o estilo visual. Não existe tempo visual diferente do registrado: medido em teste, flexões duram 20,00 s e halteres 30,00 s simulados.
+
+### Momento do débito e da recompensa
+
+| Momento | O que acontece |
+| ------- | -------------- |
+| Pedido aceito | Nada. Energia e força intactas |
+| Caminhada | Nada |
+| **Entrada em `TRAINING`** | Energia debitada, uma única vez |
+| Execução | Nada |
+| **Conclusão natural** | Força creditada, uma única vez; nível e desbloqueios recalculados pelo modelo |
+
+A energia **não é devolvida** ao concluir. Conclusões repetidas, de outra atividade, ou sem treino iniciado são ignoradas — a reserva é limpa antes de `exercise_completed`, então um segundo sinal encontra o sistema vazio.
+
+**Falha defensiva.** A energia é conferida no pedido e nada mais a consome, então o débito na chegada deveria sempre funcionar. Ainda assim, se falhar: nenhum treino sai de graça, nenhuma força é concedida, a reserva é desfeita, Caramelo sai de `TRAINING` por uma aresta válida da matriz (`→ RESTING`) e sai `exercise_rejected` com `ENERGY_DEBIT_FAILED`.
+
+### Exclusão mútua com a alimentação
+
+A disputa é resolvida por **uma única fonte de verdade**: a reserva mantida em `Caramelo`, que vale do início da caminhada até o fim da atividade. Os dois sistemas consultam `dog.has_reserved_activity()` e **nunca conhecem um ao outro** — não há dependência circular.
+
+| Situação | Resultado |
+| -------- | --------- |
+| Treino a caminho → pedir comida | recusado, `ACTIVITY_RESERVED` |
+| Treino em execução → pedir comida | recusado, `DOG_BUSY` |
+| Refeição a caminho → pedir treino | recusado, `ACTIVITY_RESERVED` |
+| Comendo → pedir treino | recusado, `DOG_BUSY` |
+| Caminhada **dirigida a uma atividade** | não pode ser substituída |
+| Caminhada **autônoma** | pode ser substituída por uma atividade aceita |
+| Atividade concluída | reserva liberada; o outro sistema volta a aceitar |
+
+Nenhum pedido recusado fica em fila: ele simplesmente não acontece. `EATING` e `TRAINING` seguem não interrompíveis por comando — `cancel_reserved_activity()` existe apenas para o sistema que reservou desfazer o próprio pedido, e não é acessível ao jogador.
+
+### Reação cômica
+
+Sorteada com a chance do JSON (0,10), **depois** de a força já estar creditada — como exige a decisão D-5 do `MVP_SPEC.md`: nenhum resultado de sorteio pode influenciar a recompensa.
+
+É puramente visual: uma versão exagerada de `HAPPY`, com pulo mais alto e giro. Não altera energia, força, vínculo, duração nem a matriz de transições. O sistema tem `RandomNumberGenerator` próprio, aleatorizado na abertura e fixável por `set_random_seed` nos testes. Medida em 480 treinos com sementes fixas, a taxa observada ficou dentro do esperado para 10%.
+
+### Sinais e sua ordem
+
+```gdscript
+signal exercise_requested(exercise_id: StringName)
+signal exercise_rejected(exercise_id: StringName, reason: int)
+signal exercise_started(exercise_id: StringName, energy_spent: int)
+signal exercise_completed(exercise_id: StringName, strength_added: int)
+signal comic_reaction_triggered(exercise_id: StringName)
+signal hotspot_hovered(exercise_id: StringName, hovered: bool)
+```
+
+E em Caramelo, novo nesta etapa:
+
+```gdscript
+signal activity_started(activity: int)
+```
+
+Emitido quando ele entra **de fato** na atividade — já no ponto, nunca durante a caminhada, exatamente uma vez, sempre antes da conclusão e nunca para um pedido recusado.
+
+Ordem efetiva de um treino completo:
+
+```text
+exercise_requested
+  … caminhada …
+state_changed(WALKING → TRAINING)
+activity_started(TRAINING)
+energy_changed                     ← débito
+exercise_started
+  … duração do JSON …
+state_changed(TRAINING → HAPPY)
+activity_completed(TRAINING)
+strength_changed                   ← recompensa
+level_changed                      se cruzou um limiar
+unlock_granted                     um por desbloqueio novo
+exercise_completed
+comic_reaction_triggered           se sorteada
+```
+
+### Códigos de rejeição
+
+Enum `ExerciseSystem.Rejection`, estável, nunca frase livre:
+
+| Código | Quando |
+| ------ | ------ |
+| `NOT_CONFIGURED` | dependências ainda não entregues |
+| `UNKNOWN_EXERCISE` | identificador ausente de `exercises.json` |
+| `LOCKED` | nível atual abaixo do exigido |
+| `INSUFFICIENT_ENERGY` | energia menor que o custo |
+| `EXERCISE_PENDING` | já existe um treino em andamento |
+| `DOG_BUSY` | Caramelo em `EATING` ou `TRAINING` |
+| `ACTIVITY_RESERVED` | Caramelo já tem outra atividade reservada |
+| `POINT_NOT_FOUND` | o marcador do exercício não existe na cena |
+| `DOG_REFUSED` | Caramelo recusou por outro motivo |
+| `ENERGY_DEBIT_FAILED` | falha defensiva ao cobrar o custo na entrada |
+
+`FeedingSystem.Rejection` ganhou `ACTIVITY_RESERVED` pelo mesmo motivo.
+
+### Feedback contextual
+
+[`TrainingFeedback`](scripts/ui/training_feedback.gd) é uma faixa curta de texto em `Interface`, oculta por padrão. Mostra, no hover: nome, custo e ganho (`Flexões · 15 energia → +5 força`) ou o motivo do bloqueio (`Halteres · bloqueado até o nível 3`). Ao começar mostra `−15 energia`; ao terminar, `Flexões concluído · +5 força`. Some sozinha.
+
+**Não é o HUD da Etapa 9**: não há barras, não mostra energia nem força atuais e, como toda interface deste projeto, **não toca no modelo**. Usa a mesma compensação de escala do menu de alimentos — medida em ~277 × 37 px de tela nas quatro resoluções.
+
+### Nível e disponibilidade
+
+Flexões funcionam desde o nível 1. Halteres ficam bloqueados nos níveis 1 e 2 e liberam **exatamente** no nível 3. A disponibilidade é consultada ao modelo a cada pedido e a cada hover, então ela acompanha a subida de nível **sem reiniciar a cena** — inclusive quando o próprio treino é o que faz subir.
+
+### Poses
+
+Caramelo recebe só o nome do estilo (`push_ups` ou `dumbbells`), nunca custos ou recompensas.
+
+* **Flexões:** o corpo desce e sobe, patas junto ao piso, sem deslocamento horizontal.
+* **Halteres:** postura erguida, patas dianteiras alternando, e um **halter geométrico provisório** que aparece só durante esse exercício e some ao terminar.
+
 ## Estrutura da cena principal
 
 ```text
 Main                    (Node)
 ├── GameSession         (Node)        ← configuração, modelo e resolução de referências
-│   └── FeedingSystem   (Node)        ← pedidos, recompensa e recargas
+│   ├── FeedingSystem   (Node)        ← refeição: pedido, recompensa e recargas
+│   └── ExerciseSystem  (Node)        ← treino: pedido, débito, recompensa e reação
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
 │       ├── Background        (Sprite2D)     z = -100
 │       ├── WorldBounds       (Area2D)
 │       │   └── WalkableCollision  (CollisionPolygon2D)
 │       ├── InteractionPoints (Node2D)
-│       │   ├── FoodPoint     (Marker2D)
-│       │   ├── TrainingPoint (Marker2D)
-│       │   └── RestPoint     (Marker2D)
+│       │   ├── FoodPoint       (Marker2D)  (941.6, 792.1)
+│       │   ├── PushUpsPoint    (Marker2D)  (1580, 845)
+│       │   ├── DumbbellsPoint  (Marker2D)  (620, 770)
+│       │   └── RestPoint       (Marker2D)  (1217.2, 734.6)
 │       ├── CharacterLayer    (Node2D)       z = 0, y_sort_enabled
 │       │   └── Caramelo      (instância de caramelo.tscn, em (880, 860))
 │       ├── PropsLayer        (Node2D)       z = 10
-│       │   └── FoodBowl      (instância de food_bowl.tscn, em (987.6, 820.1))
+│       │   ├── FoodBowl          (instância de food_bowl.tscn, em (987.6, 820.1))
+│       │   ├── PushUpsHotspot    (instância de equipment_hotspot.tscn)
+│       │   └── DumbbellsHotspot  (instância de equipment_hotspot.tscn)
 │       └── ForegroundLayer   (Node2D)       z = 20
 └── Interface           (CanvasLayer, camada 1)
-    └── FoodMenu        (instância de food_menu.tscn, oculto por padrão)
+    ├── FoodMenu         (instância de food_menu.tscn, oculto por padrão)
+    └── TrainingFeedback (instância de training_feedback.tscn, oculto por padrão)
 ```
 
 `GameSession` é o primeiro filho de `Main`, antes de `World`: ela carrega a configuração no `_ready` e o resto da cena pode contar com o modelo já pronto.
@@ -656,8 +822,11 @@ godot --headless --path . --script tests/test_caramelo_controller.gd
 # configuração, atributos e progressão — 187 verificações
 godot --headless --path . --script tests/test_progression.gd
 
-# sistema de alimentação — 105 verificações
+# sistema de alimentação e exclusão mútua — 129 verificações
 godot --headless --path . --script tests/test_feeding_system.gd
+
+# sistema de exercícios — 141 verificações
+godot --headless --path . --script tests/test_exercise_system.gd
 ```
 
 **`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
@@ -665,6 +834,8 @@ godot --headless --path . --script tests/test_feeding_system.gd
 **`test_progression.gd`** cobre a existência e validade dos três JSON, campos obrigatórios, unicidade de IDs, limiares crescentes, relações entre arquivos, **22 formas diferentes de configuração inválida**, os limites e a atomicidade da energia, os cinco níveis, os desbloqueios de vínculo, valores e ordem dos sinais, a posse do modelo pela `GameSession`, o desacoplamento entre Caramelo e o modelo, e a aritmética da progressão.
 
 **`test_feeding_system.gd`** cobre o pedido e as seis formas de recusa, o direcionamento ao `FoodPoint`, a recompensa só na conclusão e exatamente uma vez, sinais duplicados, conclusões de outra atividade, o teto de energia, a ordem obrigatória dos efeitos, recargas independentes vindas do JSON, a frequência de `cooldown_changed`, `activity_completed`, o pote e o menu na cena, e a ausência de recompensa sem ação do jogador.
+
+**`test_exercise_system.gd`** cobre os dois exercícios e seus números vindos do JSON, os dois pontos distintos e a ausência do marcador antigo, os hotspots, o bloqueio por nível nos níveis 1, 2 e 3, as dez formas de recusa, o débito só na entrada e uma única vez, a falha defensiva de débito, as durações de 20 s e 30 s simuladas, a recompensa só na conclusão e uma única vez, a subida de nível pelo próprio treino, a exclusão mútua nos dois sentidos, a reação cômica com semente fixa e as poses distintas com o halter provisório.
 
 Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
 
@@ -722,6 +893,19 @@ Sem clicar em nada, energia e vínculo ficam parados em 70 e 0 — nenhuma recom
 
 O menu foi verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: ele nunca sai da tela e mantém o mesmo tamanho físico (300 × ~245 px) em todas.
 
+### Treino
+
+1. No nível 1, passe o mouse pelas **barras de flexão** (direita): aparece `Flexões · 15 energia → +5 força` e um contorno claro no equipamento.
+2. Passe pelos **halteres** (esquerda): `Halteres · bloqueado até o nível 3`.
+3. Clique nas barras. Caramelo caminha até lá — **a energia não muda durante a caminhada**.
+4. Ao chegar, a faixa mostra `−15 energia` e ele começa a abaixar e subir o corpo por 20 s.
+5. Ao terminar, `Flexões concluído · +5 força`. A força só entra aqui.
+6. Repita até o nível 3 e volte aos halteres: agora aceitam, ele caminha para a **esquerda**, assume postura erguida com um halter provisório e treina 30 s por +9.
+
+Durante um treino, o pote recusa qualquer alimento, e vice-versa. Nenhum pedido recusado acontece depois.
+
+Verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: a faixa de feedback mantém ~277 × 37 px de tela e nunca sai do enquadramento.
+
 ### Área caminhável
 
 Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sobre o piso, o que deixa ver que Caramelo nunca o atravessa:
@@ -738,22 +922,22 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scripts/systems/feeding_system.gd`: o ciclo da refeição — pedido, pendência única, recompensa na conclusão e recargas.
-* `scenes/environment/food_bowl.tscn` + `scripts/environment/food_bowl.gd`: o pote clicável, feito de polígonos.
-* `scenes/ui/food_menu.tscn` + `scripts/ui/food_menu.gd`: o menu contextual dos três alimentos.
-* `tests/test_feeding_system.gd`: 105 verificações permanentes.
-* `scripts/dog/caramelo.gd`: ganhou o sinal `activity_completed` e passou a aceitar um pedido de atividade a partir de `HAPPY`, saltando por `IDLE`.
-* `scripts/systems/game_session.gd`: resolve Caramelo, o pote e o `FoodPoint` uma única vez e configura o sistema.
-* `scenes/environment/backyard.tscn` e `scenes/main/main.tscn`: instanciam o pote, o sistema e o menu.
+* `scripts/systems/exercise_system.gd`: o ciclo do treino — pedido, débito na entrada, recompensa na conclusão e reação cômica.
+* `scenes/environment/equipment_hotspot.tscn` + `scripts/environment/equipment_hotspot.gd`: cena reutilizável de área clicável sobre o equipamento pintado.
+* `scenes/ui/training_feedback.tscn` + `scripts/ui/training_feedback.gd`: a faixa de feedback contextual.
+* `tests/test_exercise_system.gd`: 141 verificações permanentes.
+* `scripts/dog/caramelo.gd`: ganhou `activity_started`, a **reserva de atividade** (fonte única da exclusão mútua), duração de atividade vinda de dados, estilo de treino e `cancel_reserved_activity`.
+* `scripts/dog/caramelo_visual.gd` e `scenes/dog/caramelo.tscn`: poses de flexão e halteres, o halter provisório e a variação cômica de `HAPPY`.
+* `scripts/systems/feeding_system.gd`: nova recusa `ACTIVITY_RESERVED`.
+* `scripts/systems/game_session.gd` e `scripts/environment/backyard.gd`: resolvem os dois marcadores e os dois hotspots.
+* `scenes/environment/backyard.tscn` e `scenes/main/main.tscn`: `TrainingPoint` removido, dois marcadores e dois hotspots no lugar, mais o sistema e a faixa de feedback.
 
-`data/foods.json` **não foi alterado** — os três alimentos já estavam corretos desde a Etapa 5.
+Em `data/exercises.json` mudou **só** o campo `training_point`, de `TrainingPoint` para `PushUpsPoint` e `DumbbellsPoint`. Nenhum valor de balanceamento foi tocado.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
 ## Limitações conhecidas
 
-* **A arte tem dois conjuntos de treino** — banco, barra e halteres à esquerda; barras de flexão à direita — e esta etapa prevê um único `TrainingPoint`, colocado no conjunto da esquerda. Quando os exercícios forem implementados (Etapa 6), flexões e halteres provavelmente precisarão de marcadores separados.
-* **Não existe pote na imagem.** `FoodPoint` marca onde o pote entrará como objeto em `PropsLayer`, numa etapa posterior.
 * **`ForegroundLayer` está vazia.** A vegetação do primeiro plano faz parte da imagem de fundo, então ela é desenhada *atrás* de Caramelo. A área caminhável foi traçada acima dessa vegetação justamente para esconder o problema. Fazer Caramelo passar de fato atrás das folhas exigiria recortá-las da arte, o que não foi feito para preservar o asset original.
 * **Sem mipmaps.** Em janelas bem menores que 1672 px de largura a redução usa filtragem linear simples. Gerar mipmaps é uma otimização possível para a Etapa 12.
 * **Proporções extremas recortam muito.** Em 640 × 1000 sobram cerca de 35% da largura da arte. O recorte é centrado e previsível, mas boa parte do quintal fica fora da tela.
@@ -761,12 +945,12 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 
 ### Caramelo
 
-* **A arte é provisória e feita de formas geométricas.** É reconhecível como um vira-lata caramelo, mas não tem a expressividade que o `MVP_SPEC.md` §15 pede. Sprites reais chegam na Etapa 5.
+* **A arte é provisória e feita de formas geométricas.** É reconhecível como um vira-lata caramelo, mas não tem a expressividade que o `MVP_SPEC.md` §15 pede.
 * **Só a forma inicial existe.** A forma musculosa (níveis 4–5) não foi tentada.
 * **O desvio de trajeto tem uma perna só.** Se nem a linha reta nem a rota pelo ponto interno servirem, o destino é recusado. Basta para este quintal, que é quase convexo (0,4% dos trajetos precisam do desvio), mas um cenário mais recortado exigiria outra solução.
-* **Caramelo não desvia de objetos.** O `CharacterBody2D` tem cápsula de colisão e `velocity`, mas a posição é integrada diretamente em vez de `move_and_slide()` — não existe nada com que colidir, e `move_and_slide()` usaria o delta do motor, o que quebraria a simulação determinística dos testes. Quando a Etapa 6 trouxer objetos com corpo, a troca é de uma linha.
-* **`EATING`, `TRAINING` e `HAPPY` não são jogabilidade.** Rodam o comportamento visual, respeitam as regras de interrupção e terminam sozinhos. Não concedem nada, porque não há atributos.
-* **Um único `TrainingPoint`.** Segue valendo a limitação da Etapa 3: a arte tem dois conjuntos de treino e Caramelo só conhece o da esquerda. Os dois exercícios apontam para o mesmo `training_point` em `exercises.json`.
+* **Caramelo não desvia de objetos.** O `CharacterBody2D` tem cápsula de colisão e `velocity`, mas a posição é integrada diretamente em vez de `move_and_slide()` — não existe nada com que colidir, e `move_and_slide()` usaria o delta do motor, o que quebraria a simulação determinística dos testes. Quando existirem objetos com corpo, a troca é de uma linha.
+* **Os hotspots e o pote não bloqueiam nada.** Suas `Area2D` servem só para o clique, com `monitoring` e `monitorable` desligados.
+* **`HAPPY` continua sem efeito nos atributos**, como manda o `MVP_SPEC.md` §10: quem paga é a ação que causou a alegria.
 
 ### Alimentação
 
@@ -777,15 +961,24 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **O menu não mostra energia nem vínculo atuais.** Ele lista só o que cada alimento dá. As barras permanentes são o HUD da Etapa 9.
 * **Valores provisórios.** As recargas de 5, 15 e 10 min seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
 
+### Treino
+
+* **Sem descanso com recuperação.** `RESTING` existe e é usado pelo comportamento autônomo, mas não devolve energia. Sem comer, Caramelo acaba sem poder treinar — a recuperação passiva é da Etapa 8.
+* **A reação cômica reaproveita `HAPPY`.** É uma variação exagerada da mesma pose, não uma animação própria.
+* **O halter provisório é geométrico**, como o resto de Caramelo, e só aparece durante o exercício dos halteres.
+* **Sem cancelamento.** Depois de aceito, o treino vai até o fim: `TRAINING` é não interrompível por especificação.
+* **A duração de `EATING` ainda é constante.** O mecanismo de duração por dado existe e o treino já o usa; a alimentação continua com os 4 s da Etapa 4, sem ler `animation_seconds` de `foods.json`.
+* **Caramelo não vira para o equipamento.** Assim como no pote, a direção depende de por onde ele chegou.
+* **O nível 2 não ganhou comemoração própria** e a forma musculosa do nível 4 continua fora, como manda o escopo.
+
 ### Atributos e progressão
 
-* **Só a alimentação alimenta o modelo.** Treino e carinho continuam sem efeito, e nenhum estado gasta energia ou concede força.
-* **Nada é salvo.** Fechar o jogo descarta energia, vínculo e recargas; não há persistência nem progresso offline.
+* **Alimentação e treino alimentam o modelo.** O carinho continua sem efeito.
+* **Nada é salvo.** Fechar o jogo descarta energia, força, vínculo, nível e recargas; não há persistência nem progresso offline.
 * **Os desbloqueios não têm efeito visual.** `muscular_form`, `final_pose`, `level_2_celebration` e os três comportamentos de vínculo existem só como consulta.
-
 * **A configuração é lida só na abertura.** Editar um JSON com o jogo rodando não muda nada; é preciso reabrir. Não há recarga em tempo de execução, por decisão de escopo.
 * **`max_energy` é fixo em 100.** Vem dos dados, mas nada no MVP o altera.
-* **Valores provisórios.** As recargas dos alimentos e a chance de reação cômica seguem pendentes de playtest (pontos em aberto A-2 do `MVP_SPEC.md`).
+* **Valores provisórios.** As recargas dos alimentos e a chance de reação cômica seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
 
 ## Estrutura de diretórios
 

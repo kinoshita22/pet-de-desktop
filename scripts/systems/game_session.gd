@@ -17,6 +17,7 @@ const GROUP := &"game_session"
 var _config: GameConfig
 var _model: ProgressionModel
 var _feeding: FeedingSystem
+var _exercise: ExerciseSystem
 var _dog: Caramelo
 var _food_point: Marker2D
 
@@ -64,6 +65,47 @@ func _wire_dependencies() -> void:
 	else:
 		_feeding.attach_bowl(bowl)
 
+	_exercise = _find_descendant(self, func(node: Node) -> bool: return node is ExerciseSystem) as ExerciseSystem
+	if _exercise == null:
+		push_error("GameSession: nenhum ExerciseSystem entre os filhos.")
+		return
+	_exercise.configure(_config, _model, _dog, _collect_training_points(scope))
+	var hotspots := _collect_hotspots(scope)
+	if hotspots.is_empty():
+		push_error("GameSession: nenhum hotspot de equipamento encontrado na cena.")
+	for hotspot in hotspots:
+		_exercise.attach_hotspot(hotspot)
+
+
+## Marcadores de treino, por nome, ja no espaco de coordenadas de Caramelo. O sistema de
+## exercicios recebe o mapa pronto e nunca procura nada na arvore.
+func _collect_training_points(scope: Node) -> Dictionary:
+	var layer := _dog.get_parent() as Node2D
+	if layer == null:
+		return {}
+	var to_layer := layer.get_global_transform().affine_inverse()
+	var points: Dictionary = {}
+	var queue: Array[Node] = [scope]
+	while not queue.is_empty():
+		var node: Node = queue.pop_front()
+		if node is Marker2D and node.get_parent() != null and node.get_parent().name == &"InteractionPoints":
+			points[StringName(node.name)] = to_layer * (node as Marker2D).global_position
+		for child in node.get_children():
+			queue.append(child)
+	return points
+
+
+func _collect_hotspots(scope: Node) -> Array[Node]:
+	var found: Array[Node] = []
+	var queue: Array[Node] = [scope]
+	while not queue.is_empty():
+		var node: Node = queue.pop_front()
+		if node is EquipmentHotspot:
+			found.append(node)
+		for child in node.get_children():
+			queue.append(child)
+	return found
+
 
 func _find_descendant(from: Node, predicate: Callable) -> Node:
 	var queue: Array[Node] = [from]
@@ -78,6 +120,10 @@ func _find_descendant(from: Node, predicate: Callable) -> Node:
 
 func get_feeding_system() -> FeedingSystem:
 	return _feeding
+
+
+func get_exercise_system() -> ExerciseSystem:
+	return _exercise
 
 
 func get_caramelo() -> Caramelo:

@@ -20,6 +20,11 @@ signal state_changed(previous_state: int, new_state: int)
 ## vale — quem paga e o sistema dono dela.
 signal activity_completed(activity: int)
 
+## Emitido quando Caramelo entra **de fato** numa atividade — ja no ponto, nao durante a
+## caminhada. Sai exatamente uma vez por atividade, sempre antes da conclusao, e nunca
+## para um pedido recusado. E o gancho por onde um sistema cobra o custo da atividade.
+signal activity_started(activity: int)
+
 enum State { IDLE, WALKING, EATING, TRAINING, RESTING, HAPPY }
 
 ## Estados que `request_activity` aceita e que, ao terminar sozinhos, emitem
@@ -42,10 +47,10 @@ const UNINTERRUPTIBLE: Array = [State.EATING, State.TRAINING]
 
 const STATE_NAMES: Array = ["IDLE", "WALKING", "EATING", "TRAINING", "RESTING", "HAPPY"]
 
-## Duracoes provisorias desta etapa, em segundos. Comer e a reacao feliz seguem a
-## suposicao S-4 do `MVP_SPEC.md`; o treino e um marcador temporario, porque a duracao
-## real de cada exercicio nasce de `data/exercises.json` na Etapa 5. Nenhum valor aqui
-## e balanceamento: nada concede energia, forca, vinculo nem nivel.
+## Duracoes de reserva, em segundos. Valem apenas quando ninguem informa a duracao da
+## atividade por `set_activity_duration` — por exemplo ao chamar `request_state` direto.
+## Comer e a reacao feliz seguem a suposicao S-4 do `MVP_SPEC.md`. A duracao real de cada
+## exercicio vem de `data/exercises.json`, entregue pelo sistema de exercicios.
 const EATING_DURATION := 4.0
 const TRAINING_DURATION := 6.0
 const HAPPY_DURATION := 2.0
@@ -75,6 +80,16 @@ var _decision_duration := 0.0
 
 var _waypoints: PackedVector2Array = PackedVector2Array()
 var _pending_activity: int = -1
+## Atividade reservada por um sistema, de `WALKING` ate a conclusao. E a **fonte unica de
+## verdade** da disputa entre alimentacao e treino: os dois sistemas consultam isto em vez
+## de conhecerem um ao outro. Vale -1 quando Caramelo esta livre.
+var _reserved_activity: int = -1
+## Estilo visual do treino em curso. Caramelo so conhece o nome do estilo — nunca custo,
+## duracao ou recompensa.
+var _training_style: StringName = &""
+## Duracao informada por quem pediu a atividade, por estado. Caramelo nao conhece custo
+## nem recompensa — apenas por quanto tempo executar a pose.
+var _activity_durations: Dictionary = {}
 var _facing := 1
 ## Impede dois descansos seguidos, seguindo o principio da secao 9 do `MVP_SPEC.md`
 ## de nao repetir o mesmo comportamento autonomo duas vezes em sequencia.
@@ -128,14 +143,23 @@ func request_state(new_state: int) -> bool:
 ## O `MVP_SPEC.md` separa o deslocamento da atividade: Caramelo entra em `WALKING` ate o
 ## ponto e so ao chegar entra na atividade. Se ja estiver no ponto, entra direto.
 ## Devolve `true` quando o comando e aceito, ainda que o estado resultante seja `WALKING`.
-func request_activity(activity: int) -> bool:
+func request_activity(activity: int, target_override := Vector2.INF) -> bool:
 	if not ACTIVITIES.has(activity):
-		return false
-	if not _points.has(activity):
 		return false
 	if not is_interruptible():
 		return false
-	var target: Vector2 = _points[activity]
+	# Uma caminhada dirigida a uma atividade nao pode ser substituida por outra: quem
+	# reservou primeiro fica com o destino. Caminhada autonoma nao reserva nada e por isso
+	# pode ser trocada livremente.
+	if has_reserved_activity():
+		return false
+	var target: Vector2
+	if target_override.is_finite():
+		target = target_override
+	elif _points.has(activity):
+		target = _points[activity]
+	else:
+		return false
 	var at_target := position.distance_to(target) <= ARRIVAL_TOLERANCE
 	var next_state := activity if at_target else State.WALKING
 	# A matriz nao liga `RESTING` nem `HAPPY` a `WALKING`, nem `HAPPY` a `EATING`. Nesses
@@ -146,16 +170,25 @@ func request_activity(activity: int) -> bool:
 		if not _transition_allowed(_state, State.IDLE):
 			return false
 		_change_state(State.IDLE)
+	_reserved_activity = activity
 	if at_target:
-		return request_state(activity)
+		if request_state(activity):
+			return true
+		_reserved_activity = -1
+		return false
 	var route := _route_to(target)
 	if route.is_empty():
+		_reserved_activity = -1
 		return false
 	_waypoints = route
 	_pending_activity = activity
+	# Ja caminhando (caminhada autonoma): basta trocar o destino, sem nova transicao.
 	if _state == State.WALKING:
 		return true
-	return _change_state(State.WALKING)
+	if _change_state(State.WALKING):
+		return true
+	_reserved_activity = -1
+	return false
 
 
 func get_current_state() -> int:
@@ -171,6 +204,58 @@ func get_destination() -> Vector2:
 
 func is_interruptible() -> bool:
 	return not UNINTERRUPTIBLE.has(_state)
+
+
+## Atividade reservada no momento, ou -1. Enquanto houver reserva, nenhuma outra atividade
+## pode tomar o lugar dela.
+func get_reserved_activity() -> int:
+	return _reserved_activity
+
+
+func has_reserved_activity() -> bool:
+	return _reserved_activity != -1
+
+
+## Cancela a reserva e tira Caramelo da atividade, por uma aresta valida da matriz.
+##
+## Existe so para o sistema que reservou desfazer o proprio pedido quando nao consegue
+## prosseguir — por exemplo, se o debito de energia falhar. **Nao e um comando do jogador**:
+## `request_state` continua recusando qualquer coisa durante `EATING` e `TRAINING`.
+## Nao emite `activity_completed`, porque a atividade nao foi concluida.
+func cancel_reserved_activity() -> bool:
+	if _reserved_activity == -1:
+		return false
+	_reserved_activity = -1
+	_pending_activity = -1
+	_waypoints = PackedVector2Array()
+	match _state:
+		State.TRAINING:
+			_change_state(State.RESTING)
+		State.EATING, State.WALKING:
+			_change_state(State.IDLE)
+	return true
+
+
+## Duracao da proxima execucao de `activity`, em segundos, vinda dos dados de quem a
+## pediu. Sem isto, valem as constantes de reserva acima.
+func set_activity_duration(activity: int, seconds: float) -> void:
+	if seconds > 0.0:
+		_activity_durations[activity] = seconds
+	else:
+		_activity_durations.erase(activity)
+
+
+## Estilo visual do proximo treino. Puramente cosmetico.
+func set_training_style(style: StringName) -> void:
+	_training_style = style
+	if _visual != null and _visual.has_method("set_training_style"):
+		_visual.call("set_training_style", style)
+
+
+## Marca a proxima reacao de alegria como comica. Nao altera estado, duracao nem atributo.
+func play_comic_reaction() -> void:
+	if _visual != null and _visual.has_method("play_comic_reaction"):
+		_visual.call("play_comic_reaction")
 
 
 ## Fixa a semente do gerador proprio de Caramelo, tornando as decisoes reproduziveis.
@@ -266,6 +351,8 @@ func _change_state(new_state: int) -> bool:
 	_state = new_state
 	_enter_state(new_state)
 	state_changed.emit(previous, new_state)
+	if ACTIVITIES.has(new_state):
+		activity_started.emit(new_state)
 	return true
 
 
@@ -273,6 +360,11 @@ func _enter_state(state: int) -> void:
 	_state_elapsed = 0.0
 	_state_duration = 0.0
 	velocity = Vector2.ZERO
+	# A reserva vale do inicio da caminhada ate o fim da atividade. Qualquer outro estado
+	# significa que o fluxo acabou — inclusive `HAPPY`, ja alcancado quando a conclusao e
+	# anunciada, de modo que os sistemas ja veem Caramelo livre.
+	if state != State.WALKING and state != _reserved_activity:
+		_reserved_activity = -1
 	match state:
 		State.IDLE:
 			_waypoints = PackedVector2Array()
@@ -282,10 +374,10 @@ func _enter_state(state: int) -> void:
 			_rested_last = false
 		State.EATING:
 			_waypoints = PackedVector2Array()
-			_state_duration = EATING_DURATION
+			_state_duration = float(_activity_durations.get(State.EATING, EATING_DURATION))
 		State.TRAINING:
 			_waypoints = PackedVector2Array()
-			_state_duration = TRAINING_DURATION
+			_state_duration = float(_activity_durations.get(State.TRAINING, TRAINING_DURATION))
 		State.RESTING:
 			_waypoints = PackedVector2Array()
 			_pending_activity = -1

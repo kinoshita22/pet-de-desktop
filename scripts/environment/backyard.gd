@@ -20,7 +20,8 @@ const BASE_SIZE := Vector2(1920.0, 1080.0)
 @onready var _walkable: CollisionPolygon2D = $WorldBounds/WalkableCollision
 @onready var _character_layer: Node2D = $CharacterLayer
 @onready var _food_point: Marker2D = $InteractionPoints/FoodPoint
-@onready var _training_point: Marker2D = $InteractionPoints/TrainingPoint
+@onready var _push_ups_point: Marker2D = $InteractionPoints/PushUpsPoint
+@onready var _dumbbells_point: Marker2D = $InteractionPoints/DumbbellsPoint
 @onready var _rest_point: Marker2D = $InteractionPoints/RestPoint
 
 
@@ -36,6 +37,15 @@ func _ready() -> void:
 ## O ambiente e quem conhece a geometria; o personagem apenas recebe. Assim Caramelo nao
 ## precisa procurar nada com caminhos frageis do tipo `../../WorldBounds`, e a checagem
 ## por `has_method` evita que o quintal dependa do tipo do personagem.
+## Posicao de um ponto de interacao no espaco de `CharacterLayer`, por nome do marcador.
+## E assim que o sistema de exercicios descobre para onde mandar Caramelo.
+func get_interaction_point(point_name: StringName) -> Variant:
+	var marker := $InteractionPoints.get_node_or_null(NodePath(String(point_name))) as Marker2D
+	if marker == null:
+		return null
+	return _character_layer.get_global_transform().affine_inverse() * marker.global_position
+
+
 func _configure_characters() -> void:
 	var to_layer := _character_layer.get_global_transform().affine_inverse()
 	var from_walkable := to_layer * _walkable.get_global_transform()
@@ -46,9 +56,11 @@ func _configure_characters() -> void:
 		if character.has_method("set_walkable_polygon"):
 			character.call("set_walkable_polygon", polygon)
 		if character.has_method("set_interaction_points"):
+			# O ponto de treino entregue aqui e apenas o padrao. Cada exercicio tem o seu
+			# proprio marcador, e o sistema de exercicios passa o destino exato no pedido.
 			character.call("set_interaction_points",
 				to_layer * _food_point.global_position,
-				to_layer * _training_point.global_position,
+				to_layer * _push_ups_point.global_position,
 				to_layer * _rest_point.global_position)
 
 

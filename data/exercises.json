@@ -11,7 +11,7 @@
       "strength_gain": 5,
       "required_level": 1,
       "unlock_id": "push_ups",
-      "training_point": "TrainingPoint",
+      "training_point": "PushUpsPoint",
       "comic_reaction_chance": 0.10
     },
     {
@@ -22,7 +22,7 @@
       "strength_gain": 9,
       "required_level": 3,
       "unlock_id": "dumbbells",
-      "training_point": "TrainingPoint",
+      "training_point": "DumbbellsPoint",
       "comic_reaction_chance": 0.10
     }
   ]
