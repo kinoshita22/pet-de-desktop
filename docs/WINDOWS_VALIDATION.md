@@ -22,6 +22,13 @@ corrigido às pressas: anote o que aconteceu e em qual versão do Windows.
    `platform/windows/` com os três helpers PowerShell. **Copie a pasta inteira** — o jogo
    procura os helpers ao lado do executável.
 
+   O pacote já foi gerado uma vez em Linux, com os *export templates* 4.4.1: 97,5 MB de
+   executável, 2,3 MB de `.pck` e os três helpers. O conteúdo do `.pck` foi conferido e o
+   jogo abre a partir dele pelo Godot de Linux. **O `.exe` nunca foi aberto no Windows** —
+   é isso que esta lista existe para resolver. Note também que o executável sai **sem
+   metadados** (nome, descrição, ícone): o `rcedit` não estava instalado na máquina de
+   build.
+
 2. Conferir a política de execução do PowerShell:
 
    ```powershell

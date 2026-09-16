@@ -60,6 +60,36 @@ if [ ! -f export_presets.cfg ]; then
 	exit 2
 fi
 
+# ---------------------------------------------------------------- dados isolados
+# Exportar nao grava save — foi medido: o Godot so cria o diretorio de dados, vazio. Ainda
+# assim o build roda com um `XDG_DATA_HOME` descartavel, pela mesma razao do runner de
+# testes: nenhuma ferramenta deste repositorio encosta no `user://` de quem desenvolve.
+BUILD_DATA_HOME="$(mktemp -d "${TMPDIR:-/tmp}/caramelo-build-XXXXXXXX")"
+
+cleanup() {
+	local target="${BUILD_DATA_HOME:-}"
+	if [ -z "$target" ] || [ ! -d "$target" ]; then
+		return
+	fi
+	case "$target" in
+		*/caramelo-build-*) ;;
+		*) echo "AVISO: diretorio temporario inesperado, nao removido: $target" >&2; return ;;
+	esac
+	if [ "$target" = "/" ] || [ "$target" = "$HOME" ] || [ "${#target}" -lt 12 ]; then
+		echo "AVISO: recusando remover caminho amplo: $target" >&2
+		return
+	fi
+	rm -rf -- "$target"
+}
+trap cleanup EXIT
+
+# Os templates continuam vindo do lugar real: o diretorio isolado recebe um atalho para
+# eles, de modo que o Godot os encontre para ler sem que nada seja gravado ali.
+mkdir -p "$BUILD_DATA_HOME/godot"
+ln -s "$TEMPLATE_ROOT" "$BUILD_DATA_HOME/godot/export_templates"
+
+export XDG_DATA_HOME="$BUILD_DATA_HOME"
+
 # ---------------------------------------------------------------- exportacao
 mkdir -p "$OUTPUT_DIR"
 
@@ -78,6 +108,16 @@ fi
 # O PowerShell le arquivos do disco: dentro do .pck eles nao serviriam de nada.
 mkdir -p "$OUTPUT_DIR/platform/windows"
 cp platform/windows/*.ps1 "$OUTPUT_DIR/platform/windows/"
+
+# O rcedit e a ferramenta que grava nome, descricao e icone dentro do .exe. Sem ela o
+# export conclui com aviso, e o executavel sai funcional porem sem identificacao. Vale
+# explicar aqui, senao o aviso passa por defeito.
+if ! command -v rcedit >/dev/null 2>&1; then
+	echo
+	echo "Nota: o rcedit nao esta instalado, entao o .exe sai sem nome de produto, descricao"
+	echo "      nem icone. O jogo funciona igual. Para gravar esses metadados, instale o"
+	echo "      rcedit e aponte o caminho em Editor Settings > Export > Windows > rcedit."
+fi
 
 echo
 echo "Pacote em $OUTPUT_DIR:"
