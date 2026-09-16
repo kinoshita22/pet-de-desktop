@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/systems/game_session.gd" id="1_session"]
 [ext_resource type="PackedScene" path="res://scenes/environment/backyard.tscn" id="2_backyard"]
@@ -11,6 +11,8 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/main_hud.tscn" id="9_hud"]
 [ext_resource type="Script" path="res://scripts/systems/save_manager.gd" id="10_save"]
 [ext_resource type="PackedScene" path="res://scenes/ui/offline_summary.tscn" id="11_summary"]
+[ext_resource type="Script" path="res://scripts/systems/evolution_system.gd" id="12_evo"]
+[ext_resource type="Script" path="res://scripts/systems/affection_system.gd" id="13_aff"]
 
 [node name="Main" type="Node"]
 
@@ -25,6 +27,12 @@ script = ExtResource("5_exercise")
 
 [node name="RestSystem" type="Node" parent="GameSession"]
 script = ExtResource("7_rest")
+
+[node name="EvolutionSystem" type="Node" parent="GameSession"]
+script = ExtResource("12_evo")
+
+[node name="AffectionSystem" type="Node" parent="GameSession"]
+script = ExtResource("13_aff")
 
 [node name="SaveManager" type="Node" parent="GameSession"]
 script = ExtResource("10_save")

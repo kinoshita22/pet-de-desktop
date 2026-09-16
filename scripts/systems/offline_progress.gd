@@ -59,6 +59,15 @@ static func reconcile(snapshot: Dictionary, config: GameConfig, now_unix: int,
 	for key in cooldowns.keys():
 		cooldowns[key] = maxf(0.0, float(cooldowns[key]) - elapsed)
 
+	# 1b. A recarga do carinho tambem corre durante a ausencia: voltar horas depois nao
+	# pode encontrar o botao ainda bloqueado. Ela so diminui e nunca gera evento no resumo,
+	# porque vinculo so vem de interacao (MVP_SPEC.md secao 11).
+	var affection: Variant = result.get("affection")
+	if affection is Dictionary:
+		var pet: Dictionary = affection
+		pet["cooldown_remaining"] = maxf(0.0, float(pet.get("cooldown_remaining", 0.0)) - elapsed)
+		result["affection"] = pet
+
 	# 2. A atividade persistida decide quanto da ausencia sobra para o descanso.
 	var rest_seconds := elapsed
 	var activity: Variant = result.get("activity")

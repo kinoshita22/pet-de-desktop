@@ -162,11 +162,12 @@ func _read_json(path: String) -> Variant:
 ## Snapshot mínimo válido, base para os testes negativos e de offline.
 func _snapshot(overrides: Dictionary = {}) -> Dictionary:
 	var base := {
-		"schema_version": 1,
+		"schema_version": 2,
 		"saved_at_unix": 1_000_000,
 		"progression": {"energy": 70, "strength": 0, "bond": 0},
 		"food_cooldowns": {},
 		"rest": {"accumulated_seconds": 0.0},
+		"affection": {"cooldown_remaining": 0.0},
 		"dog": {"position": {"x": 880.0, "y": 860.0}, "facing": 1},
 		"activity": null,
 	}
@@ -201,9 +202,9 @@ func _test_schema() -> void:
 	var raw: Variant = _read_json(_path("savegame.json"))
 	_check(raw is Dictionary, "JSON valido no disco")
 	var data: Dictionary = raw
-	_check(int(data["schema_version"]) == 1, "versao %d" % int(data["schema_version"]))
+	_check(int(data["schema_version"]) == 2, "versao %d" % int(data["schema_version"]))
 	_check(int(data["saved_at_unix"]) == stamp, "timestamp preservado")
-	for field in ["progression", "food_cooldowns", "rest", "dog", "activity"]:
+	for field in ["progression", "food_cooldowns", "rest", "dog", "activity", "affection"]:
 		_check(data.has(field), "campo obrigatorio '%s' presente" % field)
 	var progression: Dictionary = data["progression"]
 	_check(not progression.has("level"), "nivel NAO e persistido")

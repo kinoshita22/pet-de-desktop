@@ -35,6 +35,10 @@ signal idle_behavior_changed(previous_behavior: int, new_behavior: int)
 ## interrompe atividade nem altera estado.
 signal selected()
 
+## Emitido quando a geometria do corpo realmente troca. Restaurar um save que ja estava
+## na forma correta **nao** emite: nada evoluiu ali.
+signal body_form_changed(previous_form: int, new_form: int)
+
 enum State { IDLE, WALKING, EATING, TRAINING, RESTING, HAPPY }
 
 ## Estados que `request_activity` aceita e que, ao terminar sozinhos, emitem
@@ -134,6 +138,8 @@ var _rested_last := false
 ## `_ready` de Caramelo roda **depois** do `_ready` da sessao (ele esta mais fundo na
 ## arvore), sem isto a inicializacao padrao zeraria a duracao da atividade restaurada.
 var _restored := false
+## Forma corporal em uso. Derivada do nivel por quem manda aplicar; nunca persistida.
+var _body_form: int = BodyForms.Form.INITIAL
 
 var _walkable: PackedVector2Array = PackedVector2Array()
 var _bounds := Rect2()
@@ -373,6 +379,61 @@ func restore_activity(activity: int, remaining_seconds: float, at_position: Vect
 	if previous != activity:
 		state_changed.emit(previous, activity)
 	return true
+
+
+## Troca a forma do corpo e ajusta colisao e area clicavel junto.
+##
+## `animate = false` aplica na hora, sem transformacao — e o que a restauracao de um save
+## usa. A **posicao logica nao muda**: so a geometria desenhada e as caixas.
+func apply_body_form(form: int, animate: bool = true) -> bool:
+	if form == _body_form and not animate:
+		return false
+	var previous := _body_form
+	_body_form = form
+	var geometry := BodyForms.geometry(form)
+	if _visual != null and _visual.has_method("set_body_form"):
+		_visual.call("set_body_form", form, animate)
+	var collision: Dictionary = geometry["_collision"]
+	# As caixas sao buscadas por caminho, e nao pelas referencias `@onready`: a restauracao
+	# de um save aplica a forma enquanto a sessao inicializa, antes do `_ready` daqui.
+	var shape := $CollisionShape2D as CollisionShape2D
+	var selection_shape := $SelectionArea/CollisionShape2D as CollisionShape2D
+	shape.position = collision["position"]
+	var capsule := shape.shape as CapsuleShape2D
+	if capsule != null:
+		capsule.radius = float(collision["radius"])
+		capsule.height = float(collision["height"])
+	var selection: Dictionary = geometry["_selection"]
+	var rectangle := selection_shape.shape as RectangleShape2D
+	if rectangle != null:
+		rectangle.size = selection["size"]
+	var offset: Vector2 = selection["position"]
+	selection_shape.position = Vector2(absf(offset.x) * -signf(float(_facing)), offset.y)
+	if previous != form:
+		body_form_changed.emit(previous, form)
+	return previous != form
+
+
+func get_body_form() -> int:
+	return _body_form
+
+
+## Apresentacao visual curta — comemoracao de nivel, pose final ou reacao afetiva.
+## Nao muda estado publico nem atributo algum.
+func play_presentation(presentation_id: StringName) -> void:
+	if _visual == null:
+		return
+	if presentation_id.begins_with("level_") and _visual.has_method("play_level_celebration"):
+		_visual.call("play_level_celebration", int(String(presentation_id).get_slice("_", 1)))
+		return
+	if _visual.has_method("play_affection_behavior"):
+		_visual.call("play_affection_behavior", presentation_id)
+
+
+func is_presenting() -> bool:
+	if _visual == null:
+		return false
+	return String(_visual.call("get_presentation")) != "" or bool(_visual.call("is_morphing"))
 
 
 ## Seleciona Caramelo sem passar por evento de entrada. E o caminho que o clique real
@@ -675,6 +736,7 @@ func _set_facing(direction: int) -> void:
 	# A area clicavel espelha junto, para acompanhar o corpo virado.
 	if _selection_shape != null:
 		_selection_shape.position.x = absf(_selection_shape.position.x) * -signf(float(direction))
+
 	if _visual != null and _visual.has_method("set_facing"):
 		_visual.call("set_facing", direction)
 

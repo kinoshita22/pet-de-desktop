@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 10 de 12 — Salvamento e progresso offline.** O progresso agora sobrevive ao fechamento do jogo: energia, força, vínculo, recargas, posição e atividade em andamento são gravados atomicamente, e o tempo em que o jogo ficou fechado é reconciliado na abertura, com teto de oito horas e sem nunca duplicar recompensa. **Carinho, modo papel de parede e configurações continuam fora.**
+**Etapa 11 de 12 — Evolução visual e vínculo.** Caramelo agora tem duas formas: a inicial dos níveis 1–3 e a musculosa dos níveis 4–5, que chega com uma transformação de 1,4 s no instante em que a força cruza 140. Os níveis 2, 4 e 5 ganharam evento visual próprio, e o carinho virou ação de verdade: um clique dá +1 de vínculo, entra em recarga de um minuto e destrava três comportamentos afetivos ao longo da convivência. O save passou para a versão 2, migrando sozinho o que a versão anterior escreveu. **Modo papel de parede, configurações e áudio continuam fora.**
 
 ## Requisitos
 
@@ -904,7 +904,7 @@ MainHUD                  (Control, canto inferior esquerdo)
 │   │       ├── Strength          "Força 40" + "Próximo nível: 40/70"
 │   │       ├── Bond              "Vínculo 8" + "Próxima reação: 8/10"
 │   │       ├── CurrentActivity   "Ocioso"
-│   │       └── ActionBar         Alimentar · Treinar · Descansar
+│   │       └── ActionBar         Alimentar · Treinar · Descansar · Carinho
 │   └── ContextContainer          marca onde os menus se encaixam
 └── Toast                         mensagem curta, no topo
 ```
@@ -1015,6 +1015,106 @@ Toda a interface usa a mesma compensação de escala, agora extraída para [`UiS
 
 Medido em janelas reais: o painel mantém **264 × ~255 px de tela** em 1850 × 950, 1280 × 720, 1024 × 768 e 640 × 950 — quatro escalas de canvas diferentes (1,137 a 3,0). Em todas, HUD e menu ficam inteiros dentro da tela e não se sobrepõem.
 
+## Evolução visual e vínculo
+
+Treinar muda o corpo de Caramelo; conviver com ele muda o jeito que ele responde. São as duas recompensas visuais do MVP — e **nenhuma das duas dá atributo, item ou moeda**.
+
+### As duas formas
+
+O `MVP_SPEC.md` §15 fixa **exatamente duas formas**. O nível 5 não cria uma terceira: ele reaproveita a musculosa.
+
+| | Inicial | Musculosa |
+| --- | --- | --- |
+| Níveis | 1, 2 e 3 | 4 e 5 |
+| Tronco | 78 × 43 px | 98 × 49 px |
+| Barriga | 56 × 20 px | 61 × 22 px |
+| Pata dianteira | 14 px de largura | 20 px |
+| Pata traseira | 15 px de largura | 17 px |
+| Sombra | 85 px | 93 px |
+| Cápsula de colisão | raio 17, altura 66 | raio 20, altura 73 |
+| Área de seleção | 129 × 82 px | 141 × 88 px |
+
+O que muda é peito, ombro, espessura das patas e postura. O que **não** muda é a identidade: a cor caramelo, a cabeça inteira — crânio, focinho, nariz, olho e orelhas —, a cauda e a coleira vermelha são os mesmos polígonos nas duas formas. Os testes comparam esses nós ponto a ponto.
+
+As duas geometrias moram juntas em [`scripts/dog/body_forms.gd`](scripts/dog/body_forms.gd), como **dado**: nenhuma parte do desenho consulta nível: o visual troca o conjunto inteiro de uma vez.
+
+### Quando a forma troca
+
+```text
+força → nível → forma
+```
+
+A força é a única coisa persistida; o nível é derivado dela e a forma é derivada do nível, por `BodyForms.form_for_level()`. **A forma nunca vai para o save** — guardá-la criaria uma segunda fonte de verdade capaz de divergir da força.
+
+A transformação em si acontece uma vez, ao cruzar o limiar de 140 de força:
+
+* Dura **1,4 s**, interpolando cada polígono entre as duas geometrias.
+* A **posição lógica não muda** — nem no começo, nem no fim. Só a geometria desenhada e as duas caixas.
+* A cápsula de colisão e a área de seleção acompanham a nova silhueta, de modo que clicar nele continua funcionando.
+* Carregar um save de nível 4 ou 5 aplica a forma **em silêncio**, sem animação e sem repetir a comemoração.
+
+### Eventos por nível
+
+| Nível | Evento | O que acontece |
+| --- | --- | --- |
+| 2 | Comemoração | 1,8 s de pulo curto e rabo acelerado |
+| 3 | — | nenhum evento visual; o nível só libera os halteres |
+| 4 | Transformação | 1,4 s de mudança de forma |
+| 5 | Pose final | 1,8 s de pose, com a forma musculosa |
+
+Cada evento acontece **uma única vez**, mesmo que a força suba de 0 a 250 num único golpe de restauração: os eventos entram numa fila sem duplicatas.
+
+### Comportamentos de vínculo
+
+Os três comportamentos do `MVP_SPEC.md` §11 chegam por limiares de vínculo, vindos de `data/levels.json`:
+
+| Vínculo | Comportamento |
+| --- | --- |
+| 10 | reação especial ao carinho, no lugar da reação simples |
+| 25 | comemoração ao abrir o jogo, uma vez por sessão |
+| 50 | animação afetiva rara, com 10% de chance a cada carinho |
+
+Abaixo de 10 o carinho ainda tem resposta — a reação simples —, porque o `MVP_SPEC.md` §11 não admite interação sem retorno.
+
+### Carinho
+
+Dois cliques: um em Caramelo para abrir o HUD, outro em **Carinho**.
+
+* Cada carinho aceito dá **+1 de vínculo** e nada mais: energia e força não se movem.
+* Depois dele começa uma recarga de **60 s**, e é ela que impede o spam. O botão desabilita e o tooltip mostra o tempo restante, no formato `0:47`.
+* O ganho, a recarga e a chance da reação rara vêm do bloco `affection` de `data/levels.json`. Não há número de carinho no código.
+
+Quando o pedido não pode ser atendido, ele é **recusado com motivo** — nunca enfileirado para depois:
+
+| Situação | Motivo | Mensagem |
+| --- | --- | --- |
+| Recarga em andamento | `ON_COOLDOWN` | Carinho disponível em 0:47. |
+| Comendo ou treinando | `DOG_BUSY` | Caramelo está ocupado. |
+| A caminho de uma atividade | `ACTIVITY_RESERVED` | Caramelo está ocupado. |
+| Transformação ou comemoração na tela | `EVOLUTION_IN_PROGRESS` | Caramelo está ocupado. |
+| Sessão ainda abrindo | `SESSION_NOT_READY` | Não dá para fazer carinho agora. |
+| Resumo offline aberto | `INTERACTION_BLOCKED` | Não dá para fazer carinho agora. |
+
+**Descansar e passear aceitam carinho.** Ele reage sem sair do lugar: o descanso continua contando e a caminhada mantém o destino lógico. Só `EATING` e `TRAINING` recusam, como manda a matriz de estados — que **não foi alterada** para acomodar animação nenhuma.
+
+### A fila de apresentações
+
+Transformação, comemorações e reações afetivas são **apresentações**: acontecem numa camada visual, sem estado público, sem reserva de atividade e sem tocar em atributo.
+
+Quando um evento nasce com Caramelo ocupado, ele espera numa fila com prioridade fixa:
+
+```text
+1. transformação do nível 4
+2. pose do nível 5
+3. comemoração do nível 2
+4. comemoração de sessão (vínculo 25)
+5. reação rara (vínculo 50)
+6. reação especial (vínculo 10)
+7. reação simples
+```
+
+A atividade em andamento vem antes de tudo isso: a fila só é consumida quando Caramelo está interrompível e sem reserva. Um mesmo evento nunca entra duas vezes.
+
 ## Salvamento e progresso offline
 
 O progresso sobrevive ao fechamento do processo, e o tempo em que o jogo ficou fechado é reconciliado na abertura seguinte — sem nunca pagar a mesma recompensa duas vezes.
@@ -1030,15 +1130,16 @@ user://savegame.rejected.json  cópia de um save ilegível ou de versão futura
 
 Sempre em `user://`, **nunca** no diretório do executável nem em `res://`, como pede o `MVP_SPEC.md` §16: mover ou desinstalar o jogo não apaga o progresso, e a versão portátil funciona igual. O formato é JSON legível, sem criptografia nem ofuscação — não há competição no MVP. O conteúdo do arquivo é **dado**, nunca executado.
 
-### Schema versão 1
+### Schema versão 2
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "saved_at_unix": 1758000000,
   "progression": { "energy": 70, "strength": 0, "bond": 0 },
   "food_cooldowns": { "kibble": 212.5 },
   "rest": { "accumulated_seconds": 41.25 },
+  "affection": { "cooldown_remaining": 38.5 },   // desde a versão 2
   "dog": { "position": { "x": 880.0, "y": 860.0 }, "facing": 1 },
   "activity": {
     "type": "exercise",            // feeding | exercise | rest
@@ -1052,9 +1153,21 @@ Sempre em `user://`, **nunca** no diretório do executável nem em `res://`, com
 }
 ```
 
-**O que não é persistido, de propósito:** `level` e a lista de desbloqueios. Ambos são derivados da força; guardá-los criaria uma segunda fonte de verdade capaz de divergir do save. Também ficam de fora o deslocamento visual, a fase da respiração, o microcomportamento ocioso e qualquer referência a nó, sinal ou `Callable`.
+**O que não é persistido, de propósito:** `level`, a forma corporal e a lista de desbloqueios. Os três são derivados da força; guardá-los criaria uma segunda fonte de verdade capaz de divergir do save. Também ficam de fora o deslocamento visual, a fase da respiração, o microcomportamento ocioso, a fila de apresentações e qualquer referência a nó, sinal ou `Callable`.
 
-Campos desconhecidos são **ignorados**, para que um save escrito por uma versão futura menor ainda carregue. Um `schema_version` maior que o suportado é **recusado** — e o arquivo é preservado numa cópia, não destruído.
+A recarga do carinho, essa sim, é gravada: ela é estado do jogo, não enfeite. Fechar e reabrir não devolve o carinho antes da hora.
+
+### Migração v1 → v2
+
+A versão 1 não tinha o bloco `affection`. Um save escrito por ela é aceito e atualizado na abertura:
+
+1. O save é **validado na versão em que está** — um v1 quebrado é recusado como v1, antes de qualquer mudança.
+2. `affection.cooldown_remaining` é criado zerado: quem volta de uma versão antiga pode fazer carinho na hora.
+3. `schema_version` passa a 2 e o jogo grava o arquivo já migrado, disparando `save_migrated`.
+
+Migrar é **idempotente**: um save que já está em v2 passa direto, sem reescrita. Um backup em v1 também é migrado quando é ele que sobra. Nada mais muda — atributos, recargas de comida, acumulador de descanso, posição e atividade em andamento atravessam a migração intactos.
+
+Campos desconhecidos são **ignorados**, para que um save escrito por uma versão futura menor ainda carregue. Um `schema_version` maior que o suportado continua **recusado e preservado**: o arquivo é copiado para `savegame.rejected.json` antes que qualquer escrita aconteça, nunca destruído.
 
 ### Escrita atômica
 
@@ -1081,13 +1194,13 @@ Campos desconhecidos são **ignorados**, para que um save escrito por uma versã
 
 ### Gatilhos de salvamento
 
-Refeição concluída · início de treino (**depois** do débito) · treino concluído · descanso que realmente recuperou energia · subida de nível · recarga que chegou a zero · autosave periódico · fechamento da janela.
+Refeição concluída · início de treino (**depois** do débito) · treino concluído · descanso que realmente recuperou energia · subida de nível · recarga de comida que chegou a zero · carinho concluído · recarga do carinho que chegou a zero · migração de v1 para v2 · reconciliação offline · autosave periódico · fechamento da janela.
 
 ```text
 debounce: 0,5 s     autosave periódico: 30 s
 ```
 
-Cada gatilho apenas **marca** o estado como sujo; o `SaveManager` agrupa os próximos e escreve uma vez. É o que impede a recarga, que muda a cada segundo, de virar escrita a cada segundo. O fechamento força a escrita ignorando o debounce — mas o jogo não depende disso: o autosave já garante o essencial.
+Cada gatilho apenas **marca** o estado como sujo; o `SaveManager` agrupa os próximos e escreve uma vez. É o que impede as recargas, que mudam a cada segundo, de virarem escrita a cada segundo — a do carinho grava quando é concedido e quando chega a zero, nunca no meio. O fechamento força a escrita ignorando o debounce — mas o jogo não depende disso: o autosave já garante o essencial.
 
 ### Relógio e teto
 
@@ -1169,13 +1282,16 @@ Tudo acontece dentro do `_ready` da sessão, antes do primeiro quadro — a inte
 
 ```text
 1. carregar configuração   5. restaurar ou cancelar a atividade
-2. carregar principal      6. ligar o autosave
-   ou backup               7. anunciar `session_ready`
-3. validar o snapshot      8. gravar o estado reconciliado
+2. carregar principal      6. aplicar a forma do nível, em silêncio
+   ou backup, migrando     7. ligar o autosave
+   de v1 se preciso        8. anunciar `session_ready`
+3. validar o snapshot      9. gravar o estado reconciliado
 4. reconciliar o tempo
 ```
 
-Os sistemas só são configurados depois da carga, então antes de `session_ready` nenhum pedido é aceito: o pote, os hotspots e os botões do HUD recusam com `NOT_CONFIGURED`.
+Os sistemas só são configurados depois da carga, então antes de `session_ready` nenhum pedido é aceito: o pote, os hotspots e os botões do HUD recusam com `NOT_CONFIGURED`, e o carinho recusa com `SESSION_NOT_READY`.
+
+A forma é aplicada no passo 6 **sem animação e sem evento**: quem volta no nível 4 encontra o corpo musculoso já em cena, não assiste à transformação de novo. Pela mesma razão a fila de apresentações começa vazia.
 
 ### Recuperação manual
 
@@ -1189,6 +1305,8 @@ Main                    (Node)
 │   ├── FeedingSystem   (Node)        ← refeição: pedido, recompensa e recargas
 │   ├── ExerciseSystem  (Node)        ← treino: pedido, débito, recompensa e reação
 │   ├── RestSystem      (Node)        ← descanso: recuperação e tendência autônoma
+│   ├── EvolutionSystem (Node)        ← forma corporal e fila de apresentações
+│   ├── AffectionSystem (Node)        ← carinho, recarga e comportamentos de vínculo
 │   └── SaveManager     (Node)        ← snapshot, escrita atômica e recuperação
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
@@ -1262,7 +1380,7 @@ godot --headless --path . --quit-after 120
 
 ## Como executar os testes
 
-São duas suítes permanentes, ambas sem janela e sem nenhum framework externo. Cada uma sai com código `0` quando tudo passa e `1` caso contrário, imprimindo cada verificação.
+São oito suítes permanentes, todas sem janela e sem nenhum framework externo. Cada uma sai com código `0` quando tudo passa e `1` caso contrário, imprimindo cada verificação.
 
 ```bash
 # controlador de Caramelo — 69 verificações
@@ -1277,14 +1395,17 @@ godot --headless --path . --script tests/test_feeding_system.gd
 # sistema de exercícios — 141 verificações
 godot --headless --path . --script tests/test_exercise_system.gd
 
-# descanso e comportamento ocioso — 126 verificações
+# descanso e comportamento ocioso — 127 verificações
 godot --headless --path . --script tests/test_rest_and_idle.gd
 
 # HUD principal e menus contextuais — 103 verificações
 godot --headless --path . --script tests/test_main_ui.gd
 
-# salvamento e progresso offline — 184 verificações
+# salvamento e progresso offline — 185 verificações
 godot --headless --path . --script tests/test_save_and_offline.gd
+
+# evolução visual e vínculo — 167 verificações
+godot --headless --path . --script tests/test_evolution_and_affection.gd
 ```
 
 Cada suíte trabalha num **diretório de save isolado** dentro de `user://`, apagado ao final: nenhuma delas encosta no save real nem na outra.
@@ -1300,6 +1421,8 @@ Cada suíte trabalha num **diretório de save isolado** dentro de `user://`, apa
 **`test_rest_and_idle.gd`** cobre a seção `rest` e onze formas de configuração inválida, o acumulador fracionário (59 s nada, o segundo restante +1, descansos separados somando), a ausência de recuperação nos outros cinco estados, deltas inválidos, saturação sem crédito oculto, o descanso solicitado com suas cinco recusas, a tendência crescente por faixa de energia, a garantia de não encadear descansos, os cinco microcomportamentos com sorteio reprodutível e o deslocamento apenas visual de `CHASE_FLY`.
 
 **`test_main_ui.gd`** cobre o HUD único e oculto, a abertura por seleção sem alterar nada, a ausência de conexões duplicadas, os quatro atributos e seus textos derivados da configuração, os dez textos de atividade, os três fluxos em cliques, o menu de exercícios com bloqueio por nível e por energia, os atalhos do pote e dos hotspots, a exclusividade dos menus, o recolhimento por tempo simulado, o Escape em duas etapas, o toast e a garantia de que nenhum script de UI chama mutador do modelo.
+
+**`test_evolution_and_affection.gd`** cobre as duas formas e a derivação a partir do nível, a identidade preservada ponto a ponto, as caixas de colisão e seleção acompanhando a silhueta, os eventos dos níveis 2, 4 e 5 com adiamento e sem duplicata, a carga silenciosa de um nível alto, o carinho com seus sete motivos de recusa, os três comportamentos de vínculo, a comemoração de sessão uma vez só, a animação rara com semente fixa, o schema 2, a migração de um principal e de um backup em v1, a recusa que preserva o arquivo byte a byte, a recarga que corre offline, a reabertura sem vínculo duplicado nem evento repetido, o botão do HUD em dois cliques e a regressão das três atividades nas duas formas.
 
 **`test_save_and_offline.gd`** cobre o schema e dezesseis formas de snapshot inválido, a escrita atômica com falhas simuladas por um adaptador de arquivos, a política de backup e de recuperação, as regras do relógio com `now_unix` injetado, a reconciliação de alimentação e treino em cada fase, o descanso com acumulador, as recargas, a retomada de atividade incompleta e os gatilhos de autosave com debounce.
 
@@ -1399,6 +1522,24 @@ Além das suítes, o ciclo foi validado com **processos separados de verdade**, 
 7. Peça algo impossível (comida em recarga, treino durante treino): a faixa no topo explica e some sozinha.
 8. Enquanto um menu está aberto ou o ponteiro está sobre o painel, o HUD não recolhe.
 
+### Evolução e carinho
+
+```bash
+godot --path . --resolution 1280x720 --position 60,60
+```
+
+1. **Forma inicial.** Ele começa fino, de pernas estreitas, com a coleira vermelha à mostra.
+2. Treine até o nível 2: um pulo curto de comemoração, e a forma **não** muda.
+3. Treine até o nível 3: os halteres liberam e ele continua na forma inicial.
+4. **Nível 4.** No instante em que a força chega a 140, o corpo engrossa em pouco mais de um segundo, sem sair do lugar. Cabeça, cor e coleira continuam os mesmos.
+5. Mande treinar de novo, e depois descansar: flexões, halteres, caminhada e descanso funcionam igual na forma nova.
+6. **Nível 5.** Uma pose final, ainda na forma musculosa — não existe terceira.
+7. Clique nele e depois em **Carinho**: ele reage, o vínculo sobe 1 e o botão desabilita por um minuto, mostrando o relógio no tooltip.
+8. Clique em **Carinho** de novo antes da hora: a faixa no topo diz quando ele volta a ficar disponível, e o vínculo não se move.
+9. Com o vínculo em 10 ou mais, a reação ao carinho fica mais efusiva. Em 50 ou mais, de vez em quando sai uma animação mais longa.
+10. Peça um treino e clique em **Carinho** enquanto ele treina: o botão está desabilitado e o treino não é interrompido.
+11. Feche e reabra o jogo logo depois de um carinho: a recarga continua de onde parou, e nenhuma comemoração se repete.
+
 ### Descanso e ociosidade
 
 Deixe rodando alguns minutos, sem clicar em nada:
@@ -1429,17 +1570,18 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scripts/systems/save_manager.gd`: snapshot, validação, escrita atômica, backup, recuperação, debounce e autosave.
-* `scripts/systems/offline_progress.gd`: a reconciliação do tempo ausente, pura e testável.
-* `scenes/ui/offline_summary.tscn` + `scripts/ui/offline_summary.gd`: o painel "Enquanto você esteve fora".
-* `tests/test_save_and_offline.gd`: 184 verificações permanentes.
-* `scripts/systems/progression_model.gd`: `restore()` e o sinal `restored`, sem setters públicos de atributo.
-* `scripts/systems/feeding_system.gd`, `exercise_system.gd`, `rest_system.gd`: APIs explícitas de leitura e restauração do próprio estado.
-* `scripts/dog/caramelo.gd`: `restore_placement`, `restore_activity`, `get_state_remaining` e `get_facing`.
-* `scripts/systems/game_session.gd`: a ordem de abertura, os gatilhos de save e `session_ready`.
-* As seis suítes anteriores passaram a usar um diretório de save isolado.
+* `scripts/dog/body_forms.gd`: a geometria das duas formas, como dado, e a regra `form_for_level()`.
+* `scripts/dog/caramelo_visual.gd`: a transformação de 1,4 s, as comemorações de nível e as reações afetivas.
+* `scripts/dog/caramelo.gd`: `apply_body_form()`, `play_presentation()`, `is_presenting()` e o sinal `body_form_changed` — sem nenhum estado novo na matriz pública.
+* `scripts/systems/evolution_system.gd`: a fila de apresentações com prioridade, sem duplicatas, consumida só com Caramelo livre.
+* `scripts/systems/affection_system.gd`: o carinho, a recarga, os sete motivos de recusa e os três comportamentos de vínculo.
+* `scripts/systems/save_manager.gd`: schema 2, `migrate()` de v1 para v2 e o sinal `save_migrated`.
+* `scripts/systems/offline_progress.gd`: a recarga do carinho correndo durante a ausência.
+* `scripts/systems/game_config.gd` + `data/levels.json`: o bloco `affection` — ganho, recarga e chance da reação rara.
+* `scripts/ui/main_hud.gd` e `scenes/ui/main_hud.tscn`: o botão **Carinho**, o toast do ganho e o tooltip da recarga.
+* `tests/test_evolution_and_affection.gd`: 167 verificações permanentes.
 
-**Nenhum dado de balanceamento foi tocado**: `data/` está byte a byte igual, assim como o asset do quintal.
+**Nenhum valor de balanceamento anterior foi tocado**: os números de `data/foods.json`, `data/exercises.json` e os blocos já existentes de `data/levels.json` estão byte a byte iguais — o arquivo só ganhou o bloco `affection`. O asset do quintal também segue intacto.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -1453,7 +1595,8 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 ### Caramelo
 
 * **A arte é provisória e feita de formas geométricas.** É reconhecível como um vira-lata caramelo, mas não tem a expressividade que o `MVP_SPEC.md` §15 pede.
-* **Só a forma inicial existe.** A forma musculosa (níveis 4–5) não foi tentada.
+* **As duas formas saem das mesmas primitivas.** A musculosa é a inicial com peito, ombro e patas maiores; não há pose nova, músculo desenhado nem veia saltada. É o suficiente para ler a evolução à distância, mas está longe do que o `MVP_SPEC.md` §15 pede da arte final.
+* **As apresentações são curtas e discretas.** Comemoração, pose final e reações afetivas duram um ou dois segundos e reaproveitam o mesmo deslocamento de corpo e rabo. Sem partícula, sem confete, sem áudio.
 * **O desvio de trajeto tem uma perna só.** Se nem a linha reta nem a rota pelo ponto interno servirem, o destino é recusado. Basta para este quintal, que é quase convexo (0,4% dos trajetos precisam do desvio), mas um cenário mais recortado exigiria outra solução.
 * **Caramelo não desvia de objetos.** O `CharacterBody2D` tem cápsula de colisão e `velocity`, mas a posição é integrada diretamente em vez de `move_and_slide()` — não existe nada com que colidir, e `move_and_slide()` usaria o delta do motor, o que quebraria a simulação determinística dos testes. Quando existirem objetos com corpo, a troca é de uma linha.
 * **Os hotspots e o pote não bloqueiam nada.** Suas `Area2D` servem só para o clique, com `monitoring` e `monitorable` desligados.
@@ -1513,6 +1656,14 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **`max_energy` é fixo em 100.** Vem dos dados, mas nada no MVP o altera.
 * **Valores provisórios.** As recargas dos alimentos e a chance de reação cômica seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
 
+### Evolução e vínculo
+
+* **A transformação é interpolação de polígono.** Cada ponto caminha em linha reta entre as duas geometrias por 1,4 s. Fica legível, mas não tem antecipação, elasticidade nem sombra acompanhando o esforço — nada do que um animador faria.
+* **A reação rara não tem variação.** Sorteada, ela sempre executa a mesma animação. O `MVP_SPEC.md` §11 pede raridade, não variedade, mas com vínculo alto ela começa a se repetir.
+* **A comemoração de sessão exige que o jogo abra com vínculo 25.** Quem cruza o limiar durante a sessão só a vê na abertura seguinte.
+* **Não há indicação de quanto falta para a próxima reação além do HUD.** O painel mostra `Vínculo 8` e `Próxima reação: 8/10`, mas nada no cenário sugere que ele está perto de destravar algo.
+* **A recarga do carinho não aparece em contagem regressiva.** O botão desabilita e o tooltip mostra o tempo, mas só ao passar o ponteiro por cima.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1531,17 +1682,12 @@ Diretórios ainda vazios contêm um `.gitkeep`, porque o Git não rastreia diret
 
 ## O que ainda não foi implementado
 
-Nada de jogabilidade existe. Em particular, seguem pendentes:
+As onze primeiras etapas do `PLANO_MVP.md` estão entregues. Seguem pendentes:
 
-* Arte definitiva de Caramelo e a forma musculosa dos níveis 4–5.
-* Os cinco comportamentos ociosos do `MVP_SPEC.md` §9 (sentar, alongar, farejar, perseguir mosca). Esta etapa entrega apenas ocioso, caminhada e descanso.
-* Carinho e os comportamentos afetivos por vínculo.
-* Objetos do cenário como entidades próprias — pote, halteres e barras ainda fazem parte da imagem de fundo.
-* Treino e descanso com efeito de verdade — só a alimentação está ligada ao modelo.
-* Carinho e os comportamentos afetivos por vínculo.
-* Interface, barras e botões.
-* Salvamento local e progresso offline.
 * Modo papel de parede, modo silencioso e redução de consumo.
+* Arte definitiva de Caramelo: as duas formas ainda são compostas por polígonos.
+* Objetos do cenário como entidades próprias — halteres e barras ainda fazem parte da imagem de fundo.
+* Janela de configurações, bandeja do sistema e inicialização automática.
 * Áudio — habilitado tecnicamente, mas nenhum som é reproduzido.
 
 

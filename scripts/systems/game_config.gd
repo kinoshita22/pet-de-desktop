@@ -28,6 +28,7 @@ var errors: PackedStringArray = PackedStringArray()
 var _max_level: int = 0
 var _initial_attributes: Dictionary = {}
 var _rest: Dictionary = {}
+var _affection: Dictionary = {}
 var _levels: Array[Dictionary] = []
 var _bond_behaviors: Array[Dictionary] = []
 var _foods: Array[Dictionary] = []
@@ -101,6 +102,11 @@ func get_initial_attributes() -> Dictionary:
 ## tendencia de descanso autonomo.
 func get_rest() -> Dictionary:
 	return _rest.duplicate(true) if is_valid else {}
+
+
+## Parametros do carinho: ganho de vinculo, recarga e chance da animacao afetiva rara.
+func get_affection() -> Dictionary:
+	return _affection.duplicate(true) if is_valid else {}
 
 func get_levels() -> Array[Dictionary]:
 	if not is_valid:
@@ -187,6 +193,7 @@ func _build(levels: Variant, foods: Variant, exercises: Variant) -> void:
 		_unlock_level.clear()
 		_initial_attributes.clear()
 		_rest.clear()
+		_affection.clear()
 		_max_level = 0
 
 
@@ -271,6 +278,10 @@ func _parse_levels(source: Variant) -> Dictionary:
 	if not (attributes_raw is Dictionary):
 		_fail("levels.json: 'initial_attributes' deve ser um objeto.")
 		attributes_raw = null
+	var affection_raw: Variant = data.get("affection")
+	if not (affection_raw is Dictionary):
+		_fail("levels.json: 'affection' deve ser um objeto.")
+		affection_raw = null
 	var rest_raw: Variant = data.get("rest")
 	if not (rest_raw is Dictionary):
 		_fail("levels.json: 'rest' deve ser um objeto.")
@@ -301,6 +312,10 @@ func _parse_levels(source: Variant) -> Dictionary:
 				"energy": int(energy), "max_energy": int(max_energy),
 				"strength": int(strength), "bond": int(bond),
 			}
+
+	# --- carinho ---
+	if affection_raw != null:
+		_parse_affection(affection_raw as Dictionary)
 
 	# --- descanso ---
 	if rest_raw != null:
@@ -412,6 +427,30 @@ func _parse_levels(source: Variant) -> Dictionary:
 				"display_name": String(display_name),
 			})
 	return bond_ids
+
+
+## Valida a secao de carinho.
+func _parse_affection(affection: Dictionary) -> void:
+	var where := "levels.json/affection"
+	var gain: Variant = _int_field(affection, "pet_bond_gain", where)
+	var cooldown: Variant = _float_field(affection, "pet_cooldown_seconds", where)
+	var chance: Variant = _float_field(affection, "rare_behavior_chance", where)
+	if gain != null and int(gain) <= 0:
+		_fail("%s: 'pet_bond_gain' deve ser positivo, veio %d." % [where, gain])
+		gain = null
+	if cooldown != null and float(cooldown) < 0.0:
+		_fail("%s: 'pet_cooldown_seconds' nao pode ser negativa, veio %s." % [where, cooldown])
+		cooldown = null
+	if chance != null and (float(chance) < 0.0 or float(chance) > 1.0):
+		_fail("%s: 'rare_behavior_chance' deve estar entre 0 e 1, veio %s." % [where, chance])
+		chance = null
+	if gain == null or cooldown == null or chance == null:
+		return
+	_affection = {
+		"pet_bond_gain": int(gain),
+		"pet_cooldown_seconds": float(cooldown),
+		"rare_behavior_chance": float(chance),
+	}
 
 
 ## Valida a secao de descanso. `max_energy` vem dos valores iniciais e delimita os dois

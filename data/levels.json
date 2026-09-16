@@ -54,6 +54,13 @@
     "autonomous_weight_critical": 0.90
   },
 
+  "affection": {
+    "_comment": "Carinho. Fonte: MVP_SPEC.md secoes 8, 9 e 11, e suposicao S-3 (recarga curta). Valores provisorios, a reavaliar em playtest.",
+    "pet_bond_gain": 1,
+    "pet_cooldown_seconds": 60,
+    "rare_behavior_chance": 0.10
+  },
+
   "bond_behaviors": [
     { "id": "petting_reaction", "required_bond": 10, "display_name": "Reacao ao carinho" },
     { "id": "startup_celebration", "required_bond": 25, "display_name": "Comemoracao especial ao iniciar o jogo" },

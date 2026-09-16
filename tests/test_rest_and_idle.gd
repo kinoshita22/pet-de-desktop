@@ -101,8 +101,9 @@ func _process(_delta: float) -> bool:
 	if _done:
 		return true
 	_done = true
-	# Diretorio de save proprio: nenhuma suite encosta no save real nem na outra.
-	SaveManager.use_isolated_directory("test_rest_and_idle")
+	# Sem persistencia: esta suite nao testa save, e cada mundo criado aqui precisa
+	# comecar limpo, sem carregar o estado deixado pelo mundo anterior.
+	SaveManager.persistence_enabled = false
 	_viewport = SubViewport.new()
 	_viewport.size = Vector2i(1920, 1080)
 	root.add_child(_viewport)
@@ -501,19 +502,34 @@ func _test_idle_behaviors() -> void:
 	var spy := Spy.new()
 	w.dog.idle_behavior_changed.connect(spy.on_idle)
 	w.dog.set_random_seed(5)
+	# Sair e voltar para IDLE: o microcomportamento zera na saida, entao a entrada sempre
+	# publica a troca. Semear com o cachorro ja ocioso as vezes sorteia o comportamento que
+	# ja estava em cena, e ai nao ha troca nenhuma para observar.
+	w.dog.request_state(Caramelo.State.RESTING)
+	w.run(0.05)
 	w.dog.request_state(Caramelo.State.IDLE)
 	w.run(0.05)
 	var first: Variant = spy.last("idle")
-	_check(first != null and first[2] != "NONE",
-		"o sinal informa anterior e novo: %s -> %s" % [first[1], first[2]])
+	_check(first != null, "a entrada em IDLE publica o microcomportamento")
+	_check(first != null and String(first[2]) != "NONE",
+		"e o sinal informa anterior e novo: %s" % ("sem sinal" if first == null
+			else "%s -> %s" % [first[1], first[2]]))
 	_check(w.dog.get_idle_behavior() >= 0, "comportamento ativo em IDLE")
 
 	_g("39-40, 46. Nada de gameplay e nenhuma mudanca de posicao logica")
-	var position_before := w.dog.position
-	var energy_before := w.model.get_energy()
-	w.run(120.0)
-	_check(w.dog.get_current_state() != Caramelo.State.IDLE or w.dog.position == position_before,
-		"posicao logica inalterada enquanto ocioso")
+	# A posicao e conferida quadro a quadro: so a caminhada pode move-la. Olhar apenas o fim
+	# dos dois minutos deixaria passar um deslocamento ocorrido numa ociosidade do meio.
+	var anchor := w.dog.position
+	var moved_while_idle := 0.0
+	for _i in int(round(120.0 / STEP)):
+		var was_idle := w.dog.get_current_state() == Caramelo.State.IDLE
+		w.run(STEP)
+		if w.dog.get_current_state() != Caramelo.State.IDLE or not was_idle:
+			anchor = w.dog.position
+			continue
+		moved_while_idle = maxf(moved_while_idle, w.dog.position.distance_to(anchor))
+	_check(is_zero_approx(moved_while_idle),
+		"posicao logica inalterada enquanto ocioso (%.3f px)" % moved_while_idle)
 	_check(w.model.get_strength() == 0 and w.model.get_bond() == 0,
 		"forca e vinculo intactos (%d / %d)" % [w.model.get_strength(), w.model.get_bond()])
 	_check(not w.dog.has_reserved_activity() or w.dog.get_current_state() == Caramelo.State.WALKING,
@@ -626,7 +642,7 @@ func _test_regression() -> void:
 
 
 func _report() -> void:
-	SaveManager.clear_isolated_directory()
+	SaveManager.persistence_enabled = true
 	print("\n" + "=".repeat(70))
 	if _failures.is_empty():
 		print("TODOS OS TESTES PASSARAM  (%d verificacoes)" % _passed)

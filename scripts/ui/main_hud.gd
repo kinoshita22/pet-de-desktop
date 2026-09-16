@@ -14,11 +14,11 @@ const GROUP := &"main_hud"
 const COLLAPSE_SECONDS := 8.0
 const TOAST_SECONDS := 3.2
 const MARGIN := 24.0
-const PANEL_WIDTH := 264.0
+const PANEL_WIDTH := 320.0
 const HEADER_FONT := 17
 const LINE_FONT := 14
 const SUB_FONT := 11
-const BUTTON_FONT := 15
+const BUTTON_FONT := 13
 const BUTTON_HEIGHT := 32.0
 const SEPARATION := 6
 
@@ -42,6 +42,7 @@ var _model: ProgressionModel
 var _feeding: FeedingSystem
 var _exercise: ExerciseSystem
 var _rest: RestSystem
+var _affection: AffectionSystem
 var _dog: Caramelo
 var _food_menu: Control
 var _exercise_menu: Control
@@ -66,6 +67,7 @@ var _pointer_inside := false
 @onready var _feed_button: Button = $Anchor/Panel/Layout/ActionBar/FeedButton
 @onready var _train_button: Button = $Anchor/Panel/Layout/ActionBar/TrainButton
 @onready var _rest_button: Button = $Anchor/Panel/Layout/ActionBar/RestButton
+@onready var _pet_button: Button = $Anchor/Panel/Layout/ActionBar/PetButton
 @onready var _context: Control = $Anchor/ContextContainer
 @onready var _toast: Control = $Toast
 @onready var _toast_panel: PanelContainer = $Toast/Panel
@@ -86,7 +88,8 @@ func _ready() -> void:
 	_feed_button.pressed.connect(_on_feed_pressed)
 	_train_button.pressed.connect(_on_train_pressed)
 	_rest_button.pressed.connect(_on_rest_pressed)
-	for button in [_feed_button, _train_button, _rest_button]:
+	_pet_button.pressed.connect(_on_pet_pressed)
+	for button in [_feed_button, _train_button, _rest_button, _pet_button]:
 		button.focus_entered.connect(_keep_open)
 	get_viewport().size_changed.connect(_reposition)
 	var session := GameSession.find_in(get_tree())
@@ -104,6 +107,7 @@ func attach(session: GameSession) -> void:
 	_feeding = session.get_feeding_system()
 	_exercise = session.get_exercise_system()
 	_rest = session.get_rest_system()
+	_affection = session.get_affection_system()
 	_dog = session.get_caramelo()
 	_food_menu = _first_in_group(&"food_menu")
 	_exercise_menu = _first_in_group(&"exercise_menu")
@@ -131,6 +135,11 @@ func attach(session: GameSession) -> void:
 	_connect(_rest.rest_started, _on_rest_started)
 	_connect(_rest.rest_completed, _on_rest_completed)
 	_connect(_rest.rest_rejected, _on_rest_rejected)
+
+	if _affection != null:
+		_connect(_affection.pet_completed, _on_pet_completed)
+		_connect(_affection.pet_rejected, _on_pet_rejected)
+		_connect(_affection.pet_cooldown_changed, _on_pet_cooldown_changed)
 
 	if _food_menu != null and _food_menu.has_method("attach"):
 		pass  # o menu ja se liga sozinho no proprio `_ready`
@@ -302,6 +311,13 @@ func _on_train_pressed() -> void:
 	_exercise_menu.call("open")
 
 
+func _on_pet_pressed() -> void:
+	_keep_open()
+	# O HUD nao credita vinculo: quem decide e o sistema de carinho.
+	if _affection != null:
+		_affection.request_pet()
+
+
 func _on_rest_pressed() -> void:
 	_keep_open()
 	_close_context_menus()
@@ -397,6 +413,35 @@ func _on_rest_completed() -> void:
 
 func _on_rest_rejected(reason: int) -> void:
 	_show_toast(_rest_reason_text(reason))
+
+
+func _on_pet_completed(bond_added: int) -> void:
+	_show_toast("+%d vínculo" % bond_added if bond_added > 0 else "Caramelo gostou do carinho.")
+	_refresh_buttons()
+
+
+func _on_pet_rejected(reason: int) -> void:
+	_show_toast(_pet_reason_text(reason))
+
+
+func _on_pet_cooldown_changed(_remaining: float) -> void:
+	_refresh_buttons()
+
+
+func _pet_reason_text(reason: int) -> String:
+	match reason:
+		AffectionSystem.Rejection.ON_COOLDOWN:
+			return "Carinho disponível em %s." % _clock(_affection.get_cooldown_remaining())
+		AffectionSystem.Rejection.DOG_BUSY, AffectionSystem.Rejection.ACTIVITY_RESERVED:
+			return "Caramelo está ocupado."
+		AffectionSystem.Rejection.EVOLUTION_IN_PROGRESS:
+			return "Caramelo está ocupado."
+	return "Não dá para fazer carinho agora."
+
+
+static func _clock(seconds: float) -> String:
+	var total := ceili(maxf(seconds, 0.0))
+	return "%d:%02d" % [total / 60, total % 60]
 
 
 # --------------------------------------------------------------------------------------
@@ -505,6 +550,16 @@ func _refresh_buttons() -> void:
 	var busy := not _dog.is_interruptible() or _dog.has_reserved_activity()
 	_rest_button.disabled = busy
 	_rest_button.tooltip_text = "Caramelo está ocupado" if busy else "Mandar Caramelo descansar"
+	if _affection == null:
+		return
+	var reason := _affection.get_blocking_reason()
+	_pet_button.disabled = reason != -1
+	if reason == AffectionSystem.Rejection.ON_COOLDOWN:
+		_pet_button.tooltip_text = "Carinho disponível em %s" % _clock(_affection.get_cooldown_remaining())
+	elif reason != -1:
+		_pet_button.tooltip_text = "Caramelo está ocupado"
+	else:
+		_pet_button.tooltip_text = "Fazer carinho em Caramelo"
 
 
 # --------------------------------------------------------------------------------------
@@ -543,7 +598,7 @@ func _apply_scale(factor: float) -> void:
 	for label in [_strength_sub, _bond_sub]:
 		label.add_theme_font_size_override("font_size", roundi(SUB_FONT * factor))
 	_energy_bar.custom_minimum_size = Vector2(0.0, 8.0 * factor)
-	for button in [_feed_button, _train_button, _rest_button]:
+	for button in [_feed_button, _train_button, _rest_button, _pet_button]:
 		button.add_theme_font_size_override("font_size", roundi(BUTTON_FONT * factor))
 		button.custom_minimum_size = Vector2(0.0, BUTTON_HEIGHT * factor)
 	_toast_label.add_theme_font_size_override("font_size", roundi(LINE_FONT * factor))

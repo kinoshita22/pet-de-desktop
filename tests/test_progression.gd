@@ -44,8 +44,9 @@ func _process(_delta: float) -> bool:
 	if _done:
 		return true
 	_done = true
-	# Diretorio de save proprio: nenhuma suite encosta no save real nem na outra.
-	SaveManager.use_isolated_directory("test_progression")
+	# Sem persistencia: esta suite nao testa save, e cada mundo criado aqui precisa
+	# comecar limpo, sem carregar o estado deixado pelo mundo anterior.
+	SaveManager.persistence_enabled = false
 
 	_test_config_files()
 	_test_config_relations()
@@ -671,7 +672,7 @@ func _test_progression_arithmetic() -> void:
 
 
 func _report() -> void:
-	SaveManager.clear_isolated_directory()
+	SaveManager.persistence_enabled = true
 	print("\n" + "=".repeat(70))
 	if _failures.is_empty():
 		print("TODOS OS TESTES PASSARAM  (%d verificacoes)" % _passed)

@@ -18,6 +18,9 @@ const LIE_SPEED := 2.4
 const BREATH_IDLE := 0.018
 const BREATH_REST := 0.030
 const STYLE_DUMBBELLS := &"dumbbells"
+## Duracao da transformacao do nivel 4. Cartunesca e curta, como pede a secao 15.
+const MORPH_SECONDS := 1.4
+const CELEBRATION_SECONDS := 1.8
 
 var _state: int = Caramelo.State.IDLE
 var _time := 0.0
@@ -32,6 +35,15 @@ var _comic := false
 ## nunca sai do lugar, nem durante `CHASE_FLY`.
 var _idle_behavior: int = Caramelo.IdleBehavior.NONE
 var _idle_time := 0.0
+## Forma corporal em exibicao. **Derivada do nivel**, nunca persistida.
+var _form: int = BodyForms.Form.INITIAL
+## 0 a 1 durante a transformacao; fora dela vale 0.
+var _morph := 0.0
+var _morph_time := 0.0
+## Apresentacao em curso: comemoracao de nivel, pose final ou reacao afetiva.
+var _show_id: StringName = &""
+var _show_time := 0.0
+var _show_duration := 0.0
 
 @onready var _tail: Node2D = $Tail
 @onready var _legs_front: Node2D = $LegsFront
@@ -42,6 +54,60 @@ var _idle_time := 0.0
 @onready var _dumbbell_rest: Vector2 = $Dumbbell.position
 @onready var _eye: Polygon2D = $Head/Eye
 @onready var _eye_rest: Vector2 = $Head/Eye.scale
+
+
+## Troca o conjunto de geometria. `animate = false` aplica na hora, como na restauracao
+## de um save — ali nao houve evolucao nenhuma, so estado sendo recolocado.
+func set_body_form(form: int, animate: bool = true) -> void:
+	_form = form
+	_apply_geometry(BodyForms.geometry(form))
+	_morph_time = 0.0
+	_morph = MORPH_SECONDS if animate else 0.0
+
+
+func get_body_form() -> int:
+	return _form
+
+
+## Apresentacao curta de um evento de nivel. Nao altera atributo algum.
+func play_level_celebration(level: int) -> void:
+	_show_id = StringName("level_%d" % level)
+	_show_time = 0.0
+	_show_duration = CELEBRATION_SECONDS
+
+
+## Reacao afetiva. Os identificadores vem dos comportamentos de vinculo dos dados.
+func play_affection_behavior(behavior_id: StringName) -> void:
+	_show_id = behavior_id
+	_show_time = 0.0
+	_show_duration = CELEBRATION_SECONDS
+
+
+func get_presentation() -> StringName:
+	return _show_id
+
+
+func is_morphing() -> bool:
+	return _morph > 0.0
+
+
+## Aplica poligonos e pivos de uma forma. A troca e feita de uma vez, entao nenhuma parte
+## do desenho precisa saber em que nivel Caramelo esta.
+func _apply_geometry(geometry: Dictionary) -> void:
+	for key in geometry:
+		var name := String(key)
+		if name.begins_with("_"):
+			continue
+		var node := get_node_or_null(NodePath(name)) as Polygon2D
+		if node != null:
+			node.polygon = geometry[key]
+	var pivots: Dictionary = geometry["_pivots"]
+	for key in pivots:
+		var node := get_node_or_null(NodePath(String(key))) as Node2D
+		if node != null:
+			node.position = pivots[key]
+	_head_rest = _head.position
+	_dumbbell_rest = _dumbbell.position
 
 
 ## Chamado pelo controlador a cada troca de microcomportamento ocioso.
@@ -77,6 +143,15 @@ func set_facing(direction: int) -> void:
 func _process(delta: float) -> void:
 	_time += delta
 	_idle_time += delta
+	if _morph > 0.0:
+		_morph_time += delta
+		if _morph_time >= MORPH_SECONDS:
+			_morph = 0.0
+	if _show_duration > 0.0:
+		_show_time += delta
+		if _show_time >= _show_duration:
+			_show_id = &""
+			_show_duration = 0.0
 	_lie = move_toward(_lie, 1.0 if _state == Caramelo.State.RESTING else 0.0, delta * LIE_SPEED)
 
 	var bob := 0.0
@@ -157,6 +232,45 @@ func _process(delta: float) -> void:
 				bob = -22.0 * absf(sin(_time * 6.0))
 				tail_swing = 0.90 * sin(_time * 14.0)
 				pitch = 0.075 * sin(_time * 6.0)
+
+	# Transformacao: antecipacao, expansao e pose — sem sair do lugar logico.
+	if _morph > 0.0:
+		var t := clampf(_morph_time / MORPH_SECONDS, 0.0, 1.0)
+		var pulse := sin(t * PI)
+		squash += 0.22 * pulse * (1.0 if t > 0.35 else -1.0)
+		stretch += 0.16 * pulse
+		bob -= 14.0 * pulse
+		pitch += 0.10 * sin(t * PI * 3.0)
+
+	# Apresentacoes: pose orgulhosa, pose final e reacoes afetivas.
+	match _show_id:
+		&"level_2":
+			bob -= 16.0 * absf(sin(_show_time * 7.0))
+			tail_swing = 1.0 * sin(_show_time * 15.0)
+			stretch += 0.05 * sin(_show_time * 7.0)
+		&"level_5":
+			# Pose final: peito estufado, cabeca erguida, rabo alto. Reaproveita a forma
+			# musculosa — o nivel 5 nao cria uma terceira.
+			stretch += 0.10
+			squash += 0.06
+			head_offset += Vector2(3.0, -6.0)
+			head_turn -= 0.10
+			tail_swing = 0.9 + 0.2 * sin(_show_time * 6.0)
+		&"petting_reaction":
+			head_turn += 0.22 * sin(_show_time * 3.0)
+			head_offset += Vector2(0.0, -3.0)
+			tail_swing = 0.95 * sin(_show_time * 13.0)
+		&"startup_celebration":
+			bob -= 20.0 * absf(sin(_show_time * 6.5))
+			tail_swing = 1.1 * sin(_show_time * 14.0)
+			pitch += 0.07 * sin(_show_time * 6.5)
+		&"rare_affection_idle":
+			squash -= 0.14 * absf(sin(_show_time * 2.0))
+			head_turn += 0.30 * sin(_show_time * 2.0)
+			tail_swing = 0.55 * sin(_show_time * 7.0)
+		&"simple_affection":
+			tail_swing = 0.8 * sin(_show_time * 12.0)
+			head_offset += Vector2(0.0, -2.0)
 
 	# A origem do no fica nas patas, entao encolher em Y assenta o corpo no chao.
 	position = Vector2(drift.x * float(_facing), bob + drift.y)

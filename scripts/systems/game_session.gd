@@ -25,6 +25,8 @@ var _model: ProgressionModel
 var _feeding: FeedingSystem
 var _exercise: ExerciseSystem
 var _rest: RestSystem
+var _evolution: EvolutionSystem
+var _affection: AffectionSystem
 var _save: SaveManager
 var _dog: Caramelo
 var _ready_emitted := false
@@ -93,11 +95,18 @@ func _wire_dependencies() -> void:
 	var training_points := _collect_training_points(scope)
 	_rest.configure(_config, _model, _dog, training_points.get(&"RestPoint"))
 
+	_evolution = _find_descendant(self, func(node: Node) -> bool: return node is EvolutionSystem) as EvolutionSystem
+	if _evolution != null:
+		_evolution.configure(_model, _dog)
+	_affection = _find_descendant(self, func(node: Node) -> bool: return node is AffectionSystem) as AffectionSystem
+	if _affection != null:
+		_affection.configure(_config, _model, _dog, _evolution)
+
 	_save = _find_descendant(self, func(node: Node) -> bool: return node is SaveManager) as SaveManager
 	if _save == null:
 		push_error("GameSession: nenhum SaveManager entre os filhos.")
 		return
-	_save.configure(_config, _model, _feeding, _exercise, _rest, _dog)
+	_save.configure(_config, _model, _feeding, _exercise, _rest, _dog, _affection)
 	_connect_save_triggers()
 	_start_session(training_points)
 
@@ -114,6 +123,12 @@ func _connect_save_triggers() -> void:
 	_exercise.exercise_completed.connect(func(_id: StringName, _gain: int) -> void:
 		_save.mark_dirty())
 	_rest.rest_energy_restored.connect(func(_amount: int) -> void: _save.mark_dirty())
+	if _affection != null:
+		_affection.pet_completed.connect(func(_bond: int) -> void: _save.mark_dirty())
+		_affection.pet_cooldown_changed.connect(func(remaining: float) -> void:
+			if remaining <= 0.0:
+				_save.mark_dirty())
+	_save.save_migrated.connect(func(_from: int, _to: int) -> void: _save.mark_dirty())
 	_model.level_changed.connect(func(_p: int, _n: int) -> void: _save.mark_dirty())
 	# Recarga so importa quando muda de estado material: virar disponivel.
 	_feeding.cooldown_changed.connect(func(_id: StringName, remaining: float) -> void:
@@ -150,6 +165,8 @@ func _start_session(training_points: Dictionary) -> void:
 	_last_report = report
 	_save.set_enabled(true)
 	_ready_emitted = true
+	if _affection != null:
+		_affection.set_session_ready(true)
 	session_ready.emit()
 	if not report.is_empty() and bool(report.get("has_events", false)):
 		offline_progress_applied.emit(report)
@@ -164,6 +181,9 @@ func _apply_snapshot(snapshot: Dictionary, training_points: Dictionary) -> void:
 	_model.restore(int(progression.get("energy", 0)), int(progression.get("strength", 0)),
 		int(progression.get("bond", 0)))
 	_feeding.restore_cooldowns(snapshot.get("food_cooldowns", {}))
+	if _affection != null:
+		_affection.restore_cooldown(float((snapshot.get("affection", {}) as Dictionary)
+			.get("cooldown_remaining", 0.0)))
 	_rest.restore_accumulated(float((snapshot.get("rest", {}) as Dictionary)
 		.get("accumulated_seconds", 0.0)))
 
@@ -265,6 +285,14 @@ func get_rest_system() -> RestSystem:
 
 func get_save_manager() -> SaveManager:
 	return _save
+
+
+func get_evolution_system() -> EvolutionSystem:
+	return _evolution
+
+
+func get_affection_system() -> AffectionSystem:
+	return _affection
 
 
 ## A sessao ja carregou e liberou interacao?

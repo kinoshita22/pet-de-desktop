@@ -15,7 +15,7 @@ extends Node
 ##
 ## Este no nao calcula recompensa offline nem controla Caramelo — so serializa.
 
-const SCHEMA_VERSION := 1
+const SCHEMA_VERSION := 2
 const DEFAULT_MAIN := "user://savegame.json"
 const DEFAULT_BACKUP := "user://savegame.backup.json"
 const DEFAULT_TEMP := "user://savegame.tmp.json"
@@ -35,9 +35,14 @@ enum Source { NEW_GAME, MAIN, BACKUP }
 ## save real de quem esta jogando. Vazio no jogo entregue.
 static var directory_override := ""
 
+## Desliga a persistencia por completo. As suites que nao testam save usam isto para que
+## um mundo criado no meio do teste nao carregue o estado deixado pelo anterior.
+static var persistence_enabled := true
+
 
 ## Aponta as suites para um diretorio proprio e apaga o que houver nele.
 static func use_isolated_directory(name: String) -> void:
+	persistence_enabled = true
 	directory_override = "user://%s" % name
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory_override))
 	for file in ["savegame.json", "savegame.backup.json", "savegame.tmp.json", "savegame.rejected.json"]:
@@ -48,6 +53,7 @@ static func use_isolated_directory(name: String) -> void:
 
 ## Remove o diretorio isolado e volta ao comportamento normal.
 static func clear_isolated_directory() -> void:
+	persistence_enabled = true
 	if directory_override.is_empty():
 		return
 	for file in ["savegame.json", "savegame.backup.json", "savegame.tmp.json", "savegame.rejected.json"]:
@@ -63,6 +69,8 @@ signal save_failed(reason: String)
 signal load_completed(source: int)
 signal load_failed(reason: String)
 signal backup_recovered()
+## Emitido quando um save de versao anterior foi atualizado em memoria.
+signal save_migrated(from_version: int, to_version: int)
 
 
 ## Acesso a disco isolado atras de uma interface, para que os testes possam simular falhas
@@ -109,6 +117,7 @@ var _feeding: FeedingSystem
 var _exercise: ExerciseSystem
 var _rest: RestSystem
 var _dog: Caramelo
+var _affection: AffectionSystem
 
 var _main_path := DEFAULT_MAIN
 var _backup_path := DEFAULT_BACKUP
@@ -148,7 +157,9 @@ func _notification(what: int) -> void:
 # --------------------------------------------------------------------------------------
 
 func configure(config: GameConfig, model: ProgressionModel, feeding: FeedingSystem,
-		exercise: ExerciseSystem, rest: RestSystem, dog: Caramelo) -> void:
+		exercise: ExerciseSystem, rest: RestSystem, dog: Caramelo,
+		affection: AffectionSystem = null) -> void:
+	_affection = affection
 	_config = config
 	_model = model
 	_feeding = feeding
@@ -233,6 +244,11 @@ func build_snapshot(now_unix: int) -> Dictionary:
 		},
 		"food_cooldowns": _feeding.get_cooldowns(),
 		"rest": {"accumulated_seconds": _rest.get_accumulated_seconds()},
+		# A forma do corpo e os comportamentos liberados ficam de fora: ambos derivam do
+		# nivel, que por sua vez deriva da forca. Persisti-los criaria fontes de verdade
+		# paralelas capazes de divergir do save.
+		"affection": {"cooldown_remaining":
+			_affection.get_cooldown_remaining() if is_instance_valid(_affection) else 0.0},
 		"dog": {
 			"position": {"x": _dog.position.x, "y": _dog.position.y},
 			"facing": _dog.get_facing(),
@@ -292,15 +308,21 @@ const ACTIVITY_PHASES := ["reserved", "walking", "running"]
 ## Lista de problemas do snapshot; vazia quando ele esta bom. Campos desconhecidos sao
 ## ignorados de proposito, para que um save de uma versao futura menor ainda carregue.
 func validate(snapshot: Variant, config: GameConfig, max_energy: int) -> PackedStringArray:
+	return validate_version(snapshot, config, max_energy, SCHEMA_VERSION)
+
+
+## Valida um snapshot na versao indicada. Campos introduzidos depois dela nao sao exigidos.
+func validate_version(snapshot: Variant, config: GameConfig, max_energy: int,
+		version: int) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if not (snapshot is Dictionary):
 		errors.append("a raiz do save deve ser um objeto JSON.")
 		return errors
 	var data: Dictionary = snapshot
 
-	var version: Variant = _read_int(data, "schema_version", errors)
-	if version != null and int(version) > SCHEMA_VERSION:
-		errors.append("save da versao %d, mais nova que a suportada (%d)." % [version, SCHEMA_VERSION])
+	var declared: Variant = _read_int(data, "schema_version", errors)
+	if declared != null and int(declared) > SCHEMA_VERSION:
+		errors.append("save da versao %d, mais nova que a suportada (%d)." % [declared, SCHEMA_VERSION])
 	var saved_at: Variant = _read_int(data, "saved_at_unix", errors)
 	if saved_at != null and int(saved_at) < 0:
 		errors.append("'saved_at_unix' nao pode ser negativo.")
@@ -331,6 +353,19 @@ func validate(snapshot: Variant, config: GameConfig, max_energy: int) -> PackedS
 				errors.append("food_cooldowns/%s nao pode ser negativo." % key)
 			elif config != null and config.get_food(StringName(key)).is_empty():
 				errors.append("food_cooldowns/%s nao existe em foods.json." % key)
+
+	# `affection` nasceu na versao 2: um save v1 legitimo nao o tem, e a migracao o cria.
+	if version >= 2 or data.has("affection"):
+		var affection: Variant = data.get("affection")
+		if affection == null:
+			errors.append("campo obrigatorio 'affection' ausente.")
+		elif not (affection is Dictionary):
+			errors.append("'affection' deve ser um objeto.")
+		else:
+			var pet_cooldown: Variant = _read_float(affection as Dictionary, "cooldown_remaining",
+				errors, "affection")
+			if pet_cooldown != null and float(pet_cooldown) < 0.0:
+				errors.append("affection/cooldown_remaining nao pode ser negativo.")
 
 	var rest: Variant = data.get("rest", {})
 	if not (rest is Dictionary):
@@ -440,6 +475,8 @@ func _read_float(source: Dictionary, key: String, errors: PackedStringArray, pre
 ## escrito e conferido primeiro, o principal antigo vira backup, e so entao o temporario
 ## assume. Qualquer falha no meio deixa o ultimo save valido de pe.
 func save_now(now_unix: int = -1) -> bool:
+	if not persistence_enabled:
+		return false
 	if _model == null:
 		return _fail_save("sistemas ainda nao configurados.")
 	save_started.emit()
@@ -507,6 +544,8 @@ func _fail_save(reason: String) -> bool:
 ## **Nada e sobrescrito aqui** — um save corrompido ou de versao futura fica no disco
 ## exatamente como estava, para que o jogador possa recupera-lo a mao.
 func load_snapshot(max_energy: int) -> Dictionary:
+	if not persistence_enabled:
+		return {"source": Source.NEW_GAME, "snapshot": null, "reason": ""}
 	var main_result := _try_load(_main_path, max_energy)
 	if main_result["snapshot"] != null:
 		load_completed.emit(Source.MAIN)
@@ -556,10 +595,39 @@ func _try_load(path: String, max_energy: int) -> Dictionary:
 	var parsed: Variant = JSON.parse_string(text as String)
 	if parsed == null:
 		return {"snapshot": null, "reason": "JSON invalido"}
-	var errors := validate(parsed, _config, max_energy)
+	var migrated := migrate(parsed, _config, max_energy)
+	if migrated["snapshot"] == null:
+		return {"snapshot": null, "reason": migrated["reason"]}
+	if int(migrated["from_version"]) < SCHEMA_VERSION:
+		save_migrated.emit(int(migrated["from_version"]), SCHEMA_VERSION)
+	return {"snapshot": migrated["snapshot"], "reason": ""}
+
+
+## Valida e, se preciso, atualiza um snapshot antigo para a versao corrente.
+##
+## A validacao acontece **na versao em que o arquivo esta**, antes de qualquer mudanca:
+## um save v1 quebrado e recusado como v1, e o arquivo original nunca e tocado aqui.
+## Migrar e idempotente — um save ja em v2 passa direto.
+##
+## Devolve `{"snapshot": Dictionary ou null, "from_version": int, "reason": String}`.
+func migrate(parsed: Variant, config: GameConfig, max_energy: int) -> Dictionary:
+	if not (parsed is Dictionary):
+		return {"snapshot": null, "from_version": 0, "reason": "a raiz do save deve ser um objeto JSON."}
+	var data: Dictionary = (parsed as Dictionary).duplicate(true)
+	var version := int(data.get("schema_version", 0))
+	if version > SCHEMA_VERSION:
+		return {"snapshot": null, "from_version": version,
+			"reason": "save da versao %d, mais nova que a suportada (%d)." % [version, SCHEMA_VERSION]}
+
+	var errors := validate_version(data, config, max_energy, version)
 	if not errors.is_empty():
-		return {"snapshot": null, "reason": errors[0]}
-	return {"snapshot": parsed as Dictionary, "reason": ""}
+		return {"snapshot": null, "from_version": version, "reason": errors[0]}
+
+	if version < 2:
+		# v1 -> v2: o carinho passa a ter recarga persistida, comecando zerada.
+		data["affection"] = {"cooldown_remaining": 0.0}
+		data["schema_version"] = 2
+	return {"snapshot": data, "from_version": version, "reason": ""}
 
 
 static func source_name(source: int) -> String:
