@@ -46,9 +46,13 @@ var _affection: AffectionSystem
 var _dog: Caramelo
 var _food_menu: Control
 var _exercise_menu: Control
+var _settings_panel: Control
+var _session: GameSession
+var _quiet := false
 
 var _idle_seconds := 0.0
 var _toast_seconds := 0.0
+var _toast_essential := false
 var _pointer_inside := false
 
 @onready var _anchor: Control = $Anchor
@@ -68,6 +72,7 @@ var _pointer_inside := false
 @onready var _train_button: Button = $Anchor/Panel/Layout/ActionBar/TrainButton
 @onready var _rest_button: Button = $Anchor/Panel/Layout/ActionBar/RestButton
 @onready var _pet_button: Button = $Anchor/Panel/Layout/ActionBar/PetButton
+@onready var _settings_button: Button = $Anchor/Panel/Layout/SettingsButton
 @onready var _context: Control = $Anchor/ContextContainer
 @onready var _toast: Control = $Toast
 @onready var _toast_panel: PanelContainer = $Toast/Panel
@@ -89,7 +94,8 @@ func _ready() -> void:
 	_train_button.pressed.connect(_on_train_pressed)
 	_rest_button.pressed.connect(_on_rest_pressed)
 	_pet_button.pressed.connect(_on_pet_pressed)
-	for button in [_feed_button, _train_button, _rest_button, _pet_button]:
+	_settings_button.pressed.connect(_on_settings_pressed)
+	for button in [_feed_button, _train_button, _rest_button, _pet_button, _settings_button]:
 		button.focus_entered.connect(_keep_open)
 	get_viewport().size_changed.connect(_reposition)
 	var session := GameSession.find_in(get_tree())
@@ -109,8 +115,15 @@ func attach(session: GameSession) -> void:
 	_rest = session.get_rest_system()
 	_affection = session.get_affection_system()
 	_dog = session.get_caramelo()
+	_session = session
 	_food_menu = _first_in_group(&"food_menu")
 	_exercise_menu = _first_in_group(&"exercise_menu")
+	_settings_panel = _first_in_group(&"settings_panel")
+	if _settings_panel != null and _settings_panel.has_method("attach"):
+		_settings_panel.call("attach", session.get_settings_manager(),
+			session.get_mode_manager(), session.get_autostart_service())
+		if not _settings_panel.is_connected("quit_requested", _on_quit_requested):
+			_settings_panel.connect("quit_requested", _on_quit_requested)
 
 	_connect(_dog.selected, _on_dog_selected)
 	_connect(_dog.state_changed, _on_state_changed)
@@ -141,8 +154,13 @@ func attach(session: GameSession) -> void:
 		_connect(_affection.pet_rejected, _on_pet_rejected)
 		_connect(_affection.pet_cooldown_changed, _on_pet_cooldown_changed)
 
-	if _food_menu != null and _food_menu.has_method("attach"):
-		pass  # o menu ja se liga sozinho no proprio `_ready`
+	# Avisos de plataforma — falha de papel de parede, janela restaurada — sao essenciais:
+	# eles aparecem mesmo no modo silencioso, porque escondem um problema real se sumirem.
+	_connect(session.platform_notice, _on_platform_notice)
+	_connect(session.quiet_mode_changed, set_quiet_mode)
+	var settings := session.get_settings_manager()
+	if settings != null:
+		set_quiet_mode(settings.is_quiet_mode())
 	refresh()
 
 
@@ -225,8 +243,10 @@ func get_seconds_until_collapse() -> float:
 
 
 func has_context_menu_open() -> bool:
-	return (_food_menu != null and _food_menu.call("is_open")) \
-		or (_exercise_menu != null and _exercise_menu.call("is_open"))
+	for menu in [_food_menu, _exercise_menu, _settings_panel]:
+		if menu != null and menu.call("is_open"):
+			return true
+	return false
 
 
 func set_pointer_inside(inside: bool) -> void:
@@ -318,6 +338,40 @@ func _on_pet_pressed() -> void:
 		_affection.request_pet()
 
 
+func _on_settings_pressed() -> void:
+	_keep_open()
+	_close_context_menus(_settings_panel)
+	if _settings_panel == null:
+		return
+	if _settings_panel.call("is_open"):
+		_settings_panel.call("close")
+		return
+	_settings_panel.call("set_anchor_rect", _context_rect())
+	_settings_panel.call("open")
+
+
+## O painel so pede; quem coordena o encerramento e a sessao.
+func _on_quit_requested() -> void:
+	if _session != null:
+		_session.quit_game()
+
+
+func _on_platform_notice(message: String, essential: bool) -> void:
+	_show_toast(message, essential)
+
+
+## Modo silencioso: some com o que e so comemoracao, mantem o que e informacao de falha.
+func set_quiet_mode(quiet: bool) -> void:
+	_quiet = quiet
+	if quiet and _toast_seconds > 0.0 and not _toast_essential:
+		_toast_seconds = 0.0
+		_toast.hide()
+
+
+func is_quiet_mode() -> bool:
+	return _quiet
+
+
 func _on_rest_pressed() -> void:
 	_keep_open()
 	_close_context_menus()
@@ -332,7 +386,7 @@ func _context_rect() -> Rect2:
 
 
 func _close_context_menus(keep: Control = null) -> void:
-	for menu in [_food_menu, _exercise_menu]:
+	for menu in [_food_menu, _exercise_menu, _settings_panel]:
 		if menu != null and menu != keep and menu.call("is_open"):
 			menu.call("close")
 
@@ -385,7 +439,7 @@ func _on_feeding_completed(_food_id: StringName, energy: int, bond: int) -> void
 
 
 func _on_feeding_rejected(_food_id: StringName, reason: int) -> void:
-	_show_toast(_feeding_reason_text(reason))
+	_show_toast(_feeding_reason_text(reason), true)
 
 
 func _on_exercise_started(_exercise_id: StringName, energy_spent: int) -> void:
@@ -397,7 +451,7 @@ func _on_exercise_completed(_exercise_id: StringName, strength_added: int) -> vo
 
 
 func _on_exercise_rejected(_exercise_id: StringName, reason: int) -> void:
-	_show_toast(_exercise_reason_text(reason))
+	_show_toast(_exercise_reason_text(reason), true)
 
 
 func _on_rest_started() -> void:
@@ -412,7 +466,7 @@ func _on_rest_completed() -> void:
 
 
 func _on_rest_rejected(reason: int) -> void:
-	_show_toast(_rest_reason_text(reason))
+	_show_toast(_rest_reason_text(reason), true)
 
 
 func _on_pet_completed(bond_added: int) -> void:
@@ -421,7 +475,7 @@ func _on_pet_completed(bond_added: int) -> void:
 
 
 func _on_pet_rejected(reason: int) -> void:
-	_show_toast(_pet_reason_text(reason))
+	_show_toast(_pet_reason_text(reason), true)
 
 
 func _on_pet_cooldown_changed(_remaining: float) -> void:
@@ -478,9 +532,14 @@ func _rest_reason_text(reason: int) -> String:
 	return "Não dá para descansar agora."
 
 
-func _show_toast(message: String) -> void:
+## `essential` marca o que nao pode sumir: recusa, falha de gravacao, aviso de plataforma.
+## O modo silencioso engole o resto — e **descarta**, nunca guarda para mostrar depois.
+func _show_toast(message: String, essential: bool = false) -> void:
+	if _quiet and not essential:
+		return
 	# Uma mensagem nova substitui a anterior; nunca se empilham.
 	_toast_label.text = message
+	_toast_essential = essential
 	_toast_seconds = TOAST_SECONDS
 	_reposition()
 	_toast.show()
@@ -601,6 +660,8 @@ func _apply_scale(factor: float) -> void:
 	for button in [_feed_button, _train_button, _rest_button, _pet_button]:
 		button.add_theme_font_size_override("font_size", roundi(BUTTON_FONT * factor))
 		button.custom_minimum_size = Vector2(0.0, BUTTON_HEIGHT * factor)
+	_settings_button.add_theme_font_size_override("font_size", roundi(BUTTON_FONT * factor))
+	_settings_button.custom_minimum_size = Vector2(0.0, (BUTTON_HEIGHT - 4.0) * factor)
 	_toast_label.add_theme_font_size_override("font_size", roundi(LINE_FONT * factor))
 	UiScale.scale_stylebox(_panel, factor)
 	UiScale.scale_stylebox(_toast_panel, factor, 8.0, 6.0, 8, 2)

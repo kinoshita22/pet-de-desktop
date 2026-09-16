@@ -551,8 +551,12 @@ func _test_idle_behaviors() -> void:
 				continue
 			if w2.dog.get_idle_behavior() != Caramelo.IdleBehavior.CHASE_FLY:
 				continue
-			w2.visual._process(0.08)
-			drift = absf(w2.visual.position.x)
+			# O no visual desenha no ritmo do perfil de desempenho — em baixo consumo, uma
+			# vez a cada 0,1 s. Por isso o deslocamento e observado ao longo de algumas
+			# chamadas, e nao numa so: o que importa e que ele aconteca, nao quando.
+			for _sample in 10:
+				w2.visual._process(0.08)
+				drift = maxf(drift, absf(w2.visual.position.x))
 			logical_kept = w2.dog.position == logical
 			found = true
 			break

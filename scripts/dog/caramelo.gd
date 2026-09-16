@@ -418,6 +418,17 @@ func get_body_form() -> int:
 	return _body_form
 
 
+## Entrega o gerenciador de desempenho ao no visual, que usa o perfil para decidir com que
+## frequencia desenhar. O controlador segue andando por `delta`, sempre.
+##
+## O no e buscado por caminho: a sessao configura a plataforma durante o proprio `_ready`
+## dela, que roda antes do `_ready` daqui — a referencia `@onready` ainda nao existe.
+func set_performance_manager(manager: PerformanceManager) -> void:
+	var visual := $Visual as Node
+	if visual != null and visual.has_method("set_performance_manager"):
+		visual.call("set_performance_manager", manager)
+
+
 ## Apresentacao visual curta — comemoracao de nivel, pose final ou reacao afetiva.
 ## Nao muda estado publico nem atributo algum.
 func play_presentation(presentation_id: StringName) -> void:

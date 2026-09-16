@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 11 de 12 — Evolução visual e vínculo.** Caramelo agora tem duas formas: a inicial dos níveis 1–3 e a musculosa dos níveis 4–5, que chega com uma transformação de 1,4 s no instante em que a força cruza 140. Os níveis 2, 4 e 5 ganharam evento visual próprio, e o carinho virou ação de verdade: um clique dá +1 de vínculo, entra em recarga de um minuto e destrava três comportamentos afetivos ao longo da convivência. O save passou para a versão 2, migrando sozinho o que a versão anterior escreveu. **Modo papel de parede, configurações e áudio continuam fora.**
+**Etapa 12 de 12 — Integração com o desktop, desempenho e entrega.** O MVP está completo no que dá para completar em Linux: três modos de execução (janela, janela sem bordas e papel de parede), configurações persistentes em arquivo próprio, modo silencioso, perfis de consumo de 60, 10 e 5 FPS, inicialização automática opcional e um pacote portátil para Windows descrito por um preset de exportação. **A integração nativa com o desktop do Windows — papel de parede atrás dos ícones, atalho de inicialização e detecção de tela cheia — foi escrita e testada com dublê, mas nunca executada em Windows.** O roteiro para validá-la está em [`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md).
 
 ## Requisitos
 
@@ -16,10 +16,13 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 | Linguagem | GDScript |
 | Resolução-base | 1920 × 1080 |
 | Renderizador | Compatibility (`gl_compatibility`) |
-| Plataforma-alvo | Windows |
+| Plataforma-alvo | Windows (papel de parede, autostart e sondagem de tela cheia) |
+| Plataforma de desenvolvimento | Linux — Ubuntu 22.04, neste repositório |
 | Dependências externas | Nenhuma |
 
 Não há plugins, addons nem bibliotecas de terceiros. Basta o Godot.
+
+Em Linux e macOS o jogo roda inteiro nos modos **janela** e **janela sem bordas**; o modo papel de parede aparece desabilitado, com o motivo escrito no painel. No Windows, os três helpers PowerShell em `platform/windows/` acompanham o executável — nenhum deles pede privilégio de administrador.
 
 ### Por que o renderizador Compatibility
 
@@ -904,7 +907,8 @@ MainHUD                  (Control, canto inferior esquerdo)
 │   │       ├── Strength          "Força 40" + "Próximo nível: 40/70"
 │   │       ├── Bond              "Vínculo 8" + "Próxima reação: 8/10"
 │   │       ├── CurrentActivity   "Ocioso"
-│   │       └── ActionBar         Alimentar · Treinar · Descansar · Carinho
+│   │       ├── ActionBar         Alimentar · Treinar · Descansar · Carinho
+│   │       └── SettingsButton    Ajustes
 │   └── ContextContainer          marca onde os menus se encaixam
 └── Toast                         mensagem curta, no topo
 ```
@@ -1293,9 +1297,149 @@ Os sistemas só são configurados depois da carga, então antes de `session_read
 
 A forma é aplicada no passo 6 **sem animação e sem evento**: quem volta no nível 4 encontra o corpo musculoso já em cena, não assiste à transformação de novo. Pela mesma razão a fila de apresentações começa vazia.
 
+### Proteção do save pessoal durante o desenvolvimento
+
+O `user://` de quem desenvolve é o mesmo diretório que o jogo usa de verdade. Rodar uma suíte, ou o jogo em modo de teste, sem isolar significa escrever no save pessoal — e já aconteceu neste projeto, na Etapa 11, quando a validação obrigatória migrou o arquivo real.
+
+Desde a Etapa 12 a regra é: **toda execução automatizada usa um `XDG_DATA_HOME` temporário**, criado e conferido por [`tools/run_isolated_tests.sh`](tools/run_isolated_tests.sh). A suíte `test_desktop_modes.gd` se recusa a rodar se detectar o contrário, e as demais desligam a persistência ou usam um diretório próprio dentro de `user://`.
+
+O que nenhuma ferramenta deste repositório faz: abrir, copiar por cima, migrar, apagar ou restaurar o `savegame.json`, o `savegame.backup.json` ou o `savegame.rejected.json` pessoais. **Escolher entre o save atual e um `.rejected.json` é decisão de quem joga, não do processo de build.**
+
 ### Recuperação manual
 
 O save é JSON legível. Se o principal quebrar, basta copiar `savegame.backup.json` por cima de `savegame.json` no diretório de dados do usuário. Um save recusado por versão futura fica em `savegame.rejected.json` e pode ser guardado até a versão nova do jogo chegar.
+
+## Integração com o desktop
+
+O jogo é um bicho de estimação de desktop: ele precisa conviver com a máquina de quem joga, e não tomá-la. Esta seção descreve como ele aparece, quanto consome e como sair de qualquer situação.
+
+### Os três modos
+
+| Modo | O que é | Onde funciona |
+| --- | --- | --- |
+| `windowed` | Janela comum, decorada e redimensionável. **É o padrão de instalação nova.** | Todo sistema |
+| `borderless` | Janela sem bordas ocupando a área útil da tela. Continua sendo janela: dá para sair dela. | Todo sistema |
+| `wallpaper` | A janela entra atrás dos ícones do desktop, pela camada `WorkerW` do Explorer. | **Só Windows** |
+
+Trocar de modo não altera atributo, não cancela atividade e não toca no save de jogo. Em Linux e macOS o modo papel de parede aparece desabilitado no painel, com o motivo escrito: ele é **recusado**, não tentado.
+
+### Requisitos do modo papel de parede (Windows)
+
+* Windows com o Explorer ativo — é ele quem hospeda a camada de papel de parede.
+* PowerShell disponível, com política de execução que permita rodar os helpers do jogo. Em `Restricted` (padrão de muitas instalações) o helper é bloqueado, o jogo **avisa e continua em janela**. Liberar, se quem usa a máquina concordar: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. O jogo nunca usa `-ExecutionPolicy Bypass` sozinho.
+* A pasta `platform/windows/` ao lado do executável, com os três helpers. `tools/build_windows.sh` já a copia.
+* **Nada de administrador.** O jogo não escreve no registro, não encerra nem reinicia o `explorer.exe`, não oculta ícones e não troca o papel de parede do sistema.
+
+### Como entrar e sair do papel de parede
+
+Entrar: clique em Caramelo → **Ajustes** → **Papel de parede** → o botão vira **Confirmar?** → clique de novo.
+
+Sair, por qualquer um destes caminhos:
+
+* **`Ctrl+Shift+W`** — devolve a janela na hora, desde que a janela receba teclado.
+* **Ajustes → Voltar para janela.**
+* Abrir o jogo com **`--windowed`**.
+
+Se a integração nativa falhar, o jogo cai sozinho para **janela sem bordas** e avisa — é o que manda o `MVP_SPEC.md` §19 e a tabela de casos extremos da §21 —, e a preferência salva **não** vira papel de parede. Uma falha não é insistida: a tentativa acontece uma vez, depois de a sessão estar pronta, e para por ali.
+
+### Argumentos de linha de comando
+
+```bash
+ComoAumentarSeuCaramelo.exe --windowed       # abre em janela, ignorando o modo salvo
+ComoAumentarSeuCaramelo.exe --reset-window   # devolve 1280 × 720 em (60, 60)
+```
+
+`--windowed` vale **só para aquela execução**: a preferência continua gravada, para que dê para corrigir a configuração e voltar ao papel de parede depois. `--reset-window` mexe apenas na geometria — progresso, vínculo e recargas ficam intactos.
+
+### Modo silencioso
+
+Ligado nos **Ajustes**, ele tira da frente o que é festa e mantém o que é informação:
+
+* Somem: aviso de novo nível, comemoração do nível 2, pose do nível 5, comemoração de abertura e a animação afetiva rara.
+* Continuam: recusas ("Caramelo está ocupado", "Energia insuficiente"), falhas de gravação, avisos de plataforma e o resumo "Enquanto você esteve fora".
+* Continuam também as microanimações discretas — respiração, rabo, reação ao carinho que a pessoa acabou de pedir.
+
+Nada de progressão muda: comer, treinar, descansar e subir de nível funcionam igual. A comemoração suprimida é **descartada na hora, não guardada**: desligar o silêncio não dispara uma fila de festas atrasadas.
+
+### Baixo consumo e perfis de FPS
+
+| Situação | FPS alvo | Perfil |
+| --- | --- | --- |
+| Janela em uso (com foco) | 60 | `normal` |
+| Janela sem foco, com **baixo consumo** ligado | 10 | `baixo_consumo` |
+| Modo papel de parede | 10 | `baixo_consumo` |
+| Aplicativo alheio em tela cheia | 5 | `tela_cheia_alheia` |
+| Janela minimizada | 5 | `minimizado` |
+
+**Baixo consumo vem ligado, e vale para quando o jogo está de lado.** Ele não derruba a janela que está em uso: o `MVP_SPEC.md` §20 pede até 60 FPS no modo ativo, e ver Caramelo andando aos trancos enquanto se brinca com ele seria economia no lugar errado. O modo papel de parede, esse sim, é ocioso por definição e usa 10 FPS com a opção ligada ou não.
+
+O que **não** muda com o perfil: a duração das atividades, as recargas, o descanso, o autosave e as recompensas. Tudo isso anda por `delta`, então dez minutos de jogo a 10 FPS produzem exatamente o mesmo resultado que a 60. O que cai é a frequência de desenho — e o nó visual de Caramelo acompanha, animando uma vez com o tempo acumulado em vez de sessenta vezes e jogando fora.
+
+Perder o foco **não** é o mesmo que ter um aplicativo em tela cheia na frente. Sem uma sondagem confiável, o adaptador responde `UNKNOWN` e o perfil de 5 FPS simplesmente não entra.
+
+#### O que foi medido aqui
+
+Janela de 1850 × 950 (o gerenciador de janelas desta máquina não deixa menor em tela cheia), seis segundos por perfil:
+
+| Situação | FPS alvo | FPS medido | CPU do processo | Atualizações visuais |
+| --- | ---: | ---: | ---: | ---: |
+| Janela focada, modo normal | 60 | 58,8 | 234,6% | 353 |
+| Fora de uso / papel de parede | 10 | 10,1 | 63,3% | 52 |
+| Aplicativo alheio em tela cheia | 5 | 7,5 | 57,4% | 22 |
+| Janela minimizada | 5 | 7,5 | 56,3% | 23 |
+
+**Estes números de CPU não valem como resultado.** A máquina renderiza por software (Mesa llvmpipe): 234% significa duas CPUs e meia desenhando polígonos que uma GPU faria sem suar. A meta de "abaixo de 2% no modo ocioso" do `MVP_SPEC.md` §20 **continua não medida**, e o computador de referência continua indefinido (ponto em aberto A-1).
+
+O que estes números mostram, e isso sim vale: o perfil reduz o trabalho de verdade — 353 desenhos caem para 52 e depois para 22, e o FPS acompanha. O piso de ~56% de CPU é o custo fixo do llvmpipe, não do jogo. O limitador do Godot também não é exato nesta máquina: o alvo de 5 FPS chega como 7,5.
+
+### Configurações
+
+O painel abre pelo HUD: clique em Caramelo → **Ajustes**. Ele segue as regras dos outros menus — um de cada vez, Escape fecha, o HUD não recolhe enquanto ele está aberto.
+
+Opções: modo de exibição · modo silencioso · baixo consumo fora de uso · interagir no papel de parede · iniciar com o sistema · limite de FPS em janela (30 ou 60) · voltar para janela · fechar jogo.
+
+**Interagir no papel de parede aparece sempre desabilitado**, e é de propósito: o MVP não tem click-through seletivo, e o modo papel de parede não recebe cliques. A preferência existe no arquivo — o schema a prevê —, mas o jogo não finge que ela funciona. Para brincar com Caramelo, volte para janela.
+
+Duas delas mexem na máquina de quem joga e pedem **uma confirmação simples** — o botão vira `Confirmar?` e só a segunda batida vale: ativar o papel de parede e ativar a inicialização automática. Nenhuma das duas vem ligada de fábrica.
+
+### Onde ficam as configurações
+
+```text
+user://settings.json           preferências de desktop
+user://settings.backup.json    cópia da anterior
+user://settings.tmp.json       temporário, existe só durante a escrita
+```
+
+No Windows, `user://` é `%APPDATA%\Godot\app_userdata\Como Aumentar Seu Caramelo\`; no Linux, `~/.local/share/godot/app_userdata/...`.
+
+**Elas moram fora do save de jogo, de propósito.** São coisas diferentes: o save guarda o que Caramelo conquistou, o `settings.json` guarda como a janela abre. Separados, uma configuração corrompida não derruba a progressão — e o schema do save não precisa subir toda vez que uma opção de desktop mudar. O save continua na versão 2, exatamente como a Etapa 11 o deixou.
+
+A leitura é defensiva: arquivo ilegível, modo desconhecido, tamanho absurdo ou janela numa posição que não existe mais caem para o padrão seguro, e o jogo abre. Um `settings.json` de uma **versão futura** não é lido nem reescrito: o jogo usa os padrões naquela sessão e preserva o arquivo.
+
+### Inicializar com o sistema
+
+Só existe no Windows, e só na versão exportada — rodando pelo editor, o atalho apontaria para o Godot, e o jogo recusa.
+
+Ligar cria um atalho em `shell:startup`, a pasta Inicializar **do usuário atual**. Sem registro, sem serviço, sem administrador. O estado mostrado é o real, perguntado ao sistema, e não a preferência salva.
+
+Para remover: **Ajustes** → desmarcar **Iniciar com o sistema**, ou apagar `Como Aumentar Seu Caramelo.lnk` de `shell:startup` à mão. As duas formas valem.
+
+### Fechar
+
+O botão **Fechar jogo** — e o X da janela — seguem a mesma ordem: guardar a geometria, gravar o progresso, gravar as configurações, soltar o papel de parede, devolver uma janela normal e sair. Se a gravação falhar, o jogo avisa, preserva o save anterior e **sai assim mesmo**: nada de ficar preso tentando.
+
+### Empacotar para Windows
+
+```bash
+tools/build_windows.sh            # release em build/windows/
+tools/build_windows.sh --debug    # com console
+```
+
+O script confere o Godot e os *export templates*, cria só `build/windows/`, exporta e copia `platform/windows/*.ps1` para junto do executável. Ele não baixa nada e não versiona o resultado — `build/` está no `.gitignore`.
+
+**Nesta máquina o pacote não foi gerado:** os *export templates* do Godot 4.4.1 não estão instalados, e instalá-los exigiria baixar ~800 MB sem autorização. O script falha com a mensagem e o caminho esperado. O preset foi validado estaticamente pela suíte de testes.
+
+O pacote é portátil: copiar a pasta é instalar, apagar a pasta é desinstalar. O progresso fica em `%APPDATA%` e sobrevive — apague à parte se quiser mesmo perdê-lo. Antes de apagar, desligue a inicialização automática pelo painel, senão o atalho fica apontando para um executável que não existe mais.
 
 ## Estrutura da cena principal
 
@@ -1307,6 +1451,9 @@ Main                    (Node)
 │   ├── RestSystem      (Node)        ← descanso: recuperação e tendência autônoma
 │   ├── EvolutionSystem (Node)        ← forma corporal e fila de apresentações
 │   ├── AffectionSystem (Node)        ← carinho, recarga e comportamentos de vínculo
+│   ├── SettingsManager (Node)        ← preferências de desktop, em arquivo próprio
+│   ├── PerformanceManager (Node)     ← perfis de FPS e razão da mudança
+│   ├── DesktopModeManager (Node)     ← janela, sem bordas, papel de parede e a volta
 │   └── SaveManager     (Node)        ← snapshot, escrita atômica e recuperação
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
@@ -1329,6 +1476,7 @@ Main                    (Node)
     ├── FoodMenu         (instância de food_menu.tscn)
     ├── ExerciseMenu     (instância de exercise_menu.tscn)
     ├── TrainingFeedback (instância de training_feedback.tscn)
+    ├── SettingsPanel    (instância de settings_panel.tscn)
     ├── MainHUD          (instância de main_hud.tscn)
     └── OfflineSummary   (instância de offline_summary.tscn)
 ```
@@ -1374,13 +1522,31 @@ godot --path . --resolution 1280x720 --position 60,60 --debug-collisions
 # apenas importar recursos e sair (valida o projeto sem abrir o editor)
 godot --headless --path . --import
 
+# abrir em janela, ignorando um modo papel de parede salvo
+godot --path . -- --windowed
+
+# devolver a janela a 1280 x 720 em (60, 60), sem tocar no progresso
+godot --path . -- --reset-window
+
 # executar sem janela, encerrando após 120 quadros
 godot --headless --path . --quit-after 120
 ```
 
 ## Como executar os testes
 
-São oito suítes permanentes, todas sem janela e sem nenhum framework externo. Cada uma sai com código `0` quando tudo passa e `1` caso contrário, imprimindo cada verificação.
+São nove suítes permanentes, todas sem janela e sem nenhum framework externo. Cada uma sai com código `0` quando tudo passa e `1` caso contrário, imprimindo cada verificação.
+
+**Rode sempre pelo runner isolado:**
+
+```bash
+tools/run_isolated_tests.sh
+```
+
+Ele cria um `XDG_DATA_HOME` temporário com `mktemp -d`, **confirma** que o `user://` efetivo caiu dentro dele antes do primeiro teste — se não cair, aborta sem rodar nada —, executa a importação, as nove suítes e os 120 quadros sem interação, e no fim apaga só o diretório que ele mesmo criou. A limpeza nunca aceita `/`, `$HOME` nem um caminho sem o prefixo que ele gerou.
+
+Isso existe porque `user://` é, em Linux, `$XDG_DATA_HOME/godot/app_userdata/<projeto>`: sem isolar, rodar os testes — ou o jogo em modo de teste — escreveria no save pessoal de quem desenvolve. **Nenhuma suíte abre, lê, migra, apaga ou restaura o `savegame.json` pessoal**, e `test_desktop_modes.gd` se recusa a rodar se detectar que o `user://` aponta para o diretório pessoal.
+
+As suítes também podem ser chamadas uma a uma, sempre com o `XDG_DATA_HOME` isolado:
 
 ```bash
 # controlador de Caramelo — 69 verificações
@@ -1406,6 +1572,9 @@ godot --headless --path . --script tests/test_save_and_offline.gd
 
 # evolução visual e vínculo — 167 verificações
 godot --headless --path . --script tests/test_evolution_and_affection.gd
+
+# modos de desktop, configurações e desempenho — 230 verificações
+godot --headless --path . --script tests/test_desktop_modes.gd
 ```
 
 Cada suíte trabalha num **diretório de save isolado** dentro de `user://`, apagado ao final: nenhuma delas encosta no save real nem na outra.
@@ -1421,6 +1590,8 @@ Cada suíte trabalha num **diretório de save isolado** dentro de `user://`, apa
 **`test_rest_and_idle.gd`** cobre a seção `rest` e onze formas de configuração inválida, o acumulador fracionário (59 s nada, o segundo restante +1, descansos separados somando), a ausência de recuperação nos outros cinco estados, deltas inválidos, saturação sem crédito oculto, o descanso solicitado com suas cinco recusas, a tendência crescente por faixa de energia, a garantia de não encadear descansos, os cinco microcomportamentos com sorteio reprodutível e o deslocamento apenas visual de `CHASE_FLY`.
 
 **`test_main_ui.gd`** cobre o HUD único e oculto, a abertura por seleção sem alterar nada, a ausência de conexões duplicadas, os quatro atributos e seus textos derivados da configuração, os dez textos de atividade, os três fluxos em cliques, o menu de exercícios com bloqueio por nível e por energia, os atalhos do pote e dos hotspots, a exclusividade dos menus, o recolhimento por tempo simulado, o Escape em duas etapas, o toast e a garantia de que nenhum script de UI chama mutador do modelo.
+
+**`test_desktop_modes.gd`** cobre o isolamento do runner e a recusa de rodar sem ele, os padrões de instalação nova, a persistência e a validação das configurações (arquivo corrompido, modo desconhecido, tamanho e posição impossíveis, versão futura preservada), as trocas entre os três modos nos dois sentidos, a recusa em plataforma sem suporte, a queda para janela sem bordas quando a integração nativa falha, `--windowed` e `--reset-window`, a validação do identificador de janela, a ausência de interpolação de texto em comando, o caminho fixo dos helpers, os quatro perfis de FPS com a mesma simulação rodada em 60 e em 10 quadros por segundo, o modo silencioso sem fila acumulada, o consentimento do autostart, o encerramento coordenado com falha de gravação simulada, e o preset de exportação. **Nenhuma chamada nativa acontece: tudo passa por adaptador de teste.**
 
 **`test_evolution_and_affection.gd`** cobre as duas formas e a derivação a partir do nível, a identidade preservada ponto a ponto, as caixas de colisão e seleção acompanhando a silhueta, os eventos dos níveis 2, 4 e 5 com adiamento e sem duplicata, a carga silenciosa de um nível alto, o carinho com seus sete motivos de recusa, os três comportamentos de vínculo, a comemoração de sessão uma vez só, a animação rara com semente fixa, o schema 2, a migração de um principal e de um backup em v1, a recusa que preserva o arquivo byte a byte, a recarga que corre offline, a reabertura sem vínculo duplicado nem evento repetido, o botão do HUD em dois cliques e a regressão das três atividades nas duas formas.
 
@@ -1522,6 +1693,20 @@ Além das suítes, o ciclo foi validado com **processos separados de verdade**, 
 7. Peça algo impossível (comida em recarga, treino durante treino): a faixa no topo explica e some sozinha.
 8. Enquanto um menu está aberto ou o ponteiro está sobre o painel, o HUD não recolhe.
 
+### Ajustes, modos e consumo
+
+```bash
+godot --path . --resolution 1280x720 --position 60,60
+```
+
+1. Clique em Caramelo e depois em **Ajustes**: o painel abre encostado no HUD, com o modo atual marcado.
+2. Em Linux, **Papel de parede** aparece desabilitado e o painel explica: `Papel de parede: só no Windows (aqui: Linux).`
+3. **Janela sem bordas** ocupa a área útil da tela; **Voltar para janela** devolve a decoração e a geometria.
+4. Ligue **Modo silencioso** e suba de nível: nenhum aviso aparece, mas o nível sobe no painel do HUD.
+5. Peça um treino bloqueado: a recusa continua aparecendo — silêncio não esconde problema.
+6. **Fechar jogo** pede confirmação: o botão vira `Confirmar?` e só a segunda batida encerra.
+7. Feche pelo X e reabra: energia, força, vínculo e as preferências voltam como estavam.
+
 ### Evolução e carinho
 
 ```bash
@@ -1570,20 +1755,24 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scripts/dog/body_forms.gd`: a geometria das duas formas, como dado, e a regra `form_for_level()`.
-* `scripts/dog/caramelo_visual.gd`: a transformação de 1,4 s, as comemorações de nível e as reações afetivas.
-* `scripts/dog/caramelo.gd`: `apply_body_form()`, `play_presentation()`, `is_presenting()` e o sinal `body_form_changed` — sem nenhum estado novo na matriz pública.
-* `scripts/systems/evolution_system.gd`: a fila de apresentações com prioridade, sem duplicatas, consumida só com Caramelo livre.
-* `scripts/systems/affection_system.gd`: o carinho, a recarga, os sete motivos de recusa e os três comportamentos de vínculo.
-* `scripts/systems/save_manager.gd`: schema 2, `migrate()` de v1 para v2 e o sinal `save_migrated`.
-* `scripts/systems/offline_progress.gd`: a recarga do carinho correndo durante a ausência.
-* `scripts/systems/game_config.gd` + `data/levels.json`: o bloco `affection` — ganho, recarga e chance da reação rara.
-* `scripts/ui/main_hud.gd` e `scenes/ui/main_hud.tscn`: o botão **Carinho**, o toast do ganho e o tooltip da recarga.
-* `tests/test_evolution_and_affection.gd`: 167 verificações permanentes.
+* `scripts/platform/platform_adapter.gd`: a fronteira com o sistema operacional — capacidades, papel de parede, autostart e sondagem de tela cheia.
+* `scripts/platform/fallback_adapter.gd`: a recusa segura de Linux e macOS, como caminho testado e não como `if` espalhado.
+* `scripts/platform/windows_adapter.gd`: a integração do Windows, por três helpers PowerShell do próprio repositório, chamados com lista de argumentos e sem shell.
+* `scripts/platform/desktop_mode_manager.gd`: os três modos, a queda segura, `Ctrl+Shift+W`, `--windowed` e `--reset-window`.
+* `scripts/platform/autostart_service.gd`: o consentimento explícito da inicialização automática, com trava para os testes.
+* `scripts/systems/settings_manager.gd`: `settings.json` com escrita atômica, backup, validação de faixas e preservação de versão futura.
+* `scripts/systems/performance_manager.gd`: os quatro perfis, a razão de cada mudança e o intervalo de desenho.
+* `scenes/ui/settings_panel.tscn` + `scripts/ui/settings_panel.gd`: o painel, com confirmação simples para o que mexe na máquina.
+* `platform/windows/*.ps1`: `wallpaper_host`, `autostart` e `fullscreen_probe` — auditáveis, sem rede, sem registro e sem administrador.
+* `tools/run_isolated_tests.sh`: o runner que confirma o isolamento antes de rodar qualquer coisa.
+* `tools/build_windows.sh` + `export_presets.cfg`: o pacote portátil de Windows.
+* `docs/WINDOWS_VALIDATION.md`: o roteiro de 25 itens que **ainda precisa ser executado em Windows**.
+* `tests/test_desktop_modes.gd`: 230 verificações permanentes.
+* `scripts/systems/game_session.gd`: a ordem de abertura com plataforma, o modo silencioso e o encerramento coordenado.
+* `scripts/ui/main_hud.gd`: o botão **Ajustes**, o toast que distingue o essencial do festivo e a mensagem de plataforma.
+* `scripts/dog/caramelo_visual.gd`: o desenho no ritmo do perfil, com o tempo acumulado — durações não mudam.
 
-**Nenhum valor de balanceamento anterior foi tocado**: os números de `data/foods.json`, `data/exercises.json` e os blocos já existentes de `data/levels.json` estão byte a byte iguais — o arquivo só ganhou o bloco `affection`. O asset do quintal também segue intacto.
-
-Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
+**Nenhum dado de balanceamento foi tocado:** `data/` está byte a byte igual ao da Etapa 11, e o schema do save continua na versão 2 — as preferências de desktop foram para um arquivo próprio justamente para não mexer nele. O asset do quintal também segue intacto.
 
 ## Limitações conhecidas
 
@@ -1664,6 +1853,17 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **Não há indicação de quanto falta para a próxima reação além do HUD.** O painel mostra `Vínculo 8` e `Próxima reação: 8/10`, mas nada no cenário sugere que ele está perto de destravar algo.
 * **A recarga do carinho não aparece em contagem regressiva.** O botão desabilita e o tooltip mostra o tempo, mas só ao passar o ponteiro por cima.
 
+### Integração com o desktop
+
+* **Nada disso foi executado em Windows.** `Progman`/`WorkerW`, o atalho de inicialização e a detecção de tela cheia foram escritos, revisados e exercitados com dublê — o comportamento real continua não verificado. O roteiro está em [`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md), com todos os 25 itens em aberto.
+* **O pacote de Windows não foi gerado.** Os *export templates* do Godot não estão instalados nesta máquina e baixá-los (~800 MB) não foi autorizado. O preset foi validado estaticamente; `tools/build_windows.sh` falha com a instrução exata.
+* **Não há bandeja do sistema.** O `MVP_SPEC.md` §19 a pede como forma sempre acessível de pausar ou fechar. O Godot 4 não tem API de bandeja, e uma extensão nativa está fora do escopo. No lugar ficam `Ctrl+Shift+W`, `--windowed` e o botão **Fechar jogo**. **Este é um requisito do MVP que continua em aberto.**
+* **Não há click-through seletivo no papel de parede.** A janela recebe os cliques na área dela; não há recorte por região. Quem quiser usar o desktop normalmente volta para janela.
+* **A detecção de instância única não existe.** O `MVP_SPEC.md` §21 pede que uma segunda instância traga a primeira para frente; duas cópias abertas hoje disputam o mesmo `savegame.json`.
+* **A sondagem de tela cheia é aproximada** e custa um processo PowerShell a cada cinco segundos, só quando o jogo está fora do primeiro plano. Um aplicativo maximizado sem borda pode ser lido como tela cheia — o efeito é desenhar menos, nunca perder progresso.
+* **O limitador de FPS não é exato nesta máquina:** o alvo de 5 chega como 7,5 sob renderização por software.
+* **A meta de CPU abaixo de 2% continua não medida** — ver a tabela em *Baixo consumo e perfis de FPS*.
+
 ## Estrutura de diretórios
 
 ```text
@@ -1682,13 +1882,15 @@ Diretórios ainda vazios contêm um `.gitkeep`, porque o Git não rastreia diret
 
 ## O que ainda não foi implementado
 
-As onze primeiras etapas do `PLANO_MVP.md` estão entregues. Seguem pendentes:
+As doze etapas do `PLANO_MVP.md` estão entregues. O que continua em aberto, e por quê:
 
-* Modo papel de parede, modo silencioso e redução de consumo.
-* Arte definitiva de Caramelo: as duas formas ainda são compostas por polígonos.
-* Objetos do cenário como entidades próprias — halteres e barras ainda fazem parte da imagem de fundo.
-* Janela de configurações, bandeja do sistema e inicialização automática.
-* Áudio — habilitado tecnicamente, mas nenhum som é reproduzido.
+* **Validação em Windows** de papel de parede, autostart e detecção de tela cheia — escrito e testado com dublê, nunca executado no sistema de verdade.
+* **Bandeja do sistema** (`MVP_SPEC.md` §19): exigiria extensão nativa, fora do escopo desta etapa.
+* **Instância única** (`MVP_SPEC.md` §21): duas cópias abertas hoje disputam o mesmo save.
+* **Arte definitiva de Caramelo**: as duas formas ainda são compostas por polígonos geométricos.
+* **Objetos do cenário como entidades próprias** — halteres e barras ainda fazem parte da imagem de fundo.
+* **Áudio** — habilitado tecnicamente, mas nenhum som é reproduzido. O modo silencioso já está preparado para ele.
+* **Medição de consumo em hardware real**, com o computador de referência definido.
 
 
 O roteiro completo está em [`PLANO_MVP.md`](PLANO_MVP.md).

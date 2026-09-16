@@ -27,6 +27,7 @@ var _dog: Caramelo
 var _queue: Array[StringName] = []
 var _current: StringName = &""
 var _blocked := false
+var _quiet := false
 
 
 func _process(delta: float) -> void:
@@ -56,6 +57,35 @@ func set_blocked(blocked: bool) -> void:
 	_blocked = blocked
 
 
+## Apresentacoes que pedem atencao. A reacao ao carinho fica de fora: ela responde a um
+## clique que a pessoa acabou de dar, e sumir com ela pareceria travamento.
+const ATTENTION_SEEKING: Array = [
+	&"level_2", &"level_5", &"startup_celebration", &"rare_affection_idle",
+]
+
+
+## Modo silencioso: comemoracao nao acontece e **nao fica guardada**.
+##
+## Guardar seria pior do que suprimir: ao desligar o silencio, a fila inteira dispararia
+## de uma vez. Aqui o evento e descartado na hora — o que ele representa (nivel, vinculo,
+## forma) ja esta no modelo e nao depende de animacao nenhuma.
+func set_quiet_mode(quiet: bool) -> void:
+	if _quiet == quiet:
+		return
+	_quiet = quiet
+	if not _quiet:
+		return
+	var kept: Array[StringName] = []
+	for presentation_id in _queue:
+		if not ATTENTION_SEEKING.has(presentation_id):
+			kept.append(presentation_id)
+	_queue = kept
+
+
+func is_quiet_mode() -> bool:
+	return _quiet
+
+
 func is_busy() -> bool:
 	return _current != &"" or (_dog != null and _dog.is_presenting())
 
@@ -67,6 +97,15 @@ func get_queue() -> Array:
 ## Enfileira uma apresentacao. Duplicatas sao descartadas.
 func enqueue(presentation_id: StringName) -> void:
 	if presentation_id == &"" or _queue.has(presentation_id) or _current == presentation_id:
+		return
+	if _quiet and ATTENTION_SEEKING.has(presentation_id):
+		return
+	if _quiet and presentation_id == &"level_4":
+		# A transformacao e recompensa, nao festa: a forma troca na hora, sem animacao.
+		if is_configured():
+			evolution_started.emit(4)
+			_dog.apply_body_form(BodyForms.Form.MUSCULAR, false)
+			evolution_completed.emit(4)
 		return
 	_queue.append(presentation_id)
 	_queue.sort_custom(func(a: StringName, b: StringName) -> bool:

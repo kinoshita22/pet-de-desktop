@@ -9,7 +9,9 @@ build/
 builds/
 export/
 exports/
-export_presets.cfg
+# O preset de exportacao E versionado a partir da Etapa 12: ele descreve o que entra no
+# pacote de Windows e precisa viajar com o repositorio. Ele nao guarda credencial alguma —
+# nao ha assinatura de codigo nem deploy remoto configurados.
 *.exe
 *.pck
 *.dmg

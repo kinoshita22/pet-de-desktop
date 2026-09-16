@@ -19,6 +19,12 @@ const GROUP := &"game_session"
 signal session_ready()
 ## Relatorio estruturado da reconciliacao offline; a interface e quem o transforma em texto.
 signal offline_progress_applied(report: Dictionary)
+## Aviso curto vindo da plataforma — falha de papel de parede, janela restaurada, gravacao
+## que nao deu certo. `essential` marca o que nem o modo silencioso pode engolir.
+signal platform_notice(message: String, essential: bool)
+signal quiet_mode_changed(quiet: bool)
+## Resultado do encerramento coordenado, para quem quiser registrar ou testar.
+signal shutdown_finished(gameplay_saved: bool, settings_saved: bool)
 
 var _config: GameConfig
 var _model: ProgressionModel
@@ -28,6 +34,12 @@ var _rest: RestSystem
 var _evolution: EvolutionSystem
 var _affection: AffectionSystem
 var _save: SaveManager
+var _settings: SettingsManager
+var _performance: PerformanceManager
+var _modes: DesktopModeManager
+var _adapter: PlatformAdapter
+var _autostart: AutostartService
+var _shutting_down := false
 var _dog: Caramelo
 var _ready_emitted := false
 var _last_report: Dictionary = {}
@@ -108,7 +120,38 @@ func _wire_dependencies() -> void:
 		return
 	_save.configure(_config, _model, _feeding, _exercise, _rest, _dog, _affection)
 	_connect_save_triggers()
+	_configure_platform()
 	_start_session(training_points)
+
+
+## Liga a camada de plataforma: preferencias, modos de janela e perfil de desempenho.
+##
+## Nada aqui depende de jogo, e nada de jogo depende disto: uma configuracao corrompida
+## derruba as preferencias para o padrao e o jogo abre igual. A ordem importa — as
+## preferencias sao lidas primeiro, porque o modo de janela e o perfil de FPS saem delas.
+func _configure_platform() -> void:
+	_adapter = PlatformAdapter.create_for_current_platform()
+	_autostart = AutostartService.new(_adapter)
+	_settings = _find_descendant(self, func(node: Node) -> bool: return node is SettingsManager) as SettingsManager
+	_performance = _find_descendant(self, func(node: Node) -> bool: return node is PerformanceManager) as PerformanceManager
+	_modes = _find_descendant(self, func(node: Node) -> bool: return node is DesktopModeManager) as DesktopModeManager
+	if _settings != null:
+		_settings.load_settings()
+		_settings.settings_changed.connect(_on_settings_changed)
+	if _modes != null:
+		_modes.configure(_adapter, _settings, DesktopModeManager.has_windowed_argument())
+		_modes.mode_changed.connect(_on_mode_changed)
+		_modes.mode_failed.connect(_on_mode_failed)
+		_modes.notice.connect(func(message: String) -> void: platform_notice.emit(message, true))
+		# `--reset-window` age antes de qualquer modo: a janela volta a um tamanho de onde
+		# da para mexer em tudo o mais.
+		if DesktopModeManager.has_reset_window_argument():
+			_modes.reset_window()
+	if _performance != null:
+		_performance.configure(_settings, _adapter)
+		if _dog != null:
+			_dog.set_performance_manager(_performance)
+	_apply_quiet_mode()
 
 
 ## Eventos que tornam o estado digno de ir a disco. Cada um apenas **marca** o save como
@@ -168,6 +211,10 @@ func _start_session(training_points: Dictionary) -> void:
 	if _affection != null:
 		_affection.set_session_ready(true)
 	session_ready.emit()
+	# Papel de parede so depois daqui, e uma vez so: tentar antes deixaria a janela presa
+	# ao desktop com o jogo ainda carregando.
+	if _modes != null:
+		_modes.apply_saved_mode()
 	if not report.is_empty() and bool(report.get("has_events", false)):
 		offline_progress_applied.emit(report)
 	# O estado reconciliado precisa ir a disco agora: sem isso, uma segunda abertura
@@ -269,6 +316,96 @@ func _find_descendant(from: Node, predicate: Callable) -> Node:
 		for child in node.get_children():
 			queue.append(child)
 	return null
+
+
+func _on_mode_changed(_previous_mode: int, new_mode: int) -> void:
+	if _performance != null:
+		_performance.set_window_mode(new_mode)
+
+
+func _on_mode_failed(requested_mode: int, reason: String) -> void:
+	push_warning("GameSession: modo %s recusado — %s"
+		% [DesktopModeManager.mode_name(requested_mode), reason])
+
+
+func _on_settings_changed(key: String, _value: Variant) -> void:
+	if key == "quiet_mode" or key.is_empty():
+		_apply_quiet_mode()
+
+
+## O silencio vale para a apresentacao, nunca para a progressao: comer, treinar, descansar
+## e subir de nivel seguem exatamente iguais.
+func _apply_quiet_mode() -> void:
+	var quiet := _settings != null and _settings.is_quiet_mode()
+	if _evolution != null:
+		_evolution.set_quiet_mode(quiet)
+	quiet_mode_changed.emit(quiet)
+
+
+func _notification(what: int) -> void:
+	match what:
+		NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_WM_WINDOW_FOCUS_IN:
+			if _performance != null:
+				_performance.set_focused(true)
+		NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+			if _performance != null:
+				_performance.set_focused(false)
+		NOTIFICATION_WM_CLOSE_REQUEST:
+			request_shutdown()
+
+
+## Encerramento coordenado: guarda a geometria, grava o jogo, grava as preferencias e
+## solta o papel de parede — nessa ordem, sem esperar nada indefinidamente.
+##
+## Falha de gravacao **nao** prende o jogo: ela vira aviso e o encerramento continua, com
+## o save anterior preservado no disco pelo proprio `SaveManager`.
+func request_shutdown() -> Dictionary:
+	if _shutting_down:
+		return {"gameplay_saved": false, "settings_saved": false, "repeated": true}
+	_shutting_down = true
+	if _modes != null:
+		_modes.remember_geometry()
+		_modes.prepare_for_exit()
+	var gameplay_saved := true
+	if _save != null and _save.is_dirty():
+		gameplay_saved = _save.save_now()
+	var settings_saved := true
+	if _settings != null and SettingsManager.persistence_enabled:
+		settings_saved = _settings.save_settings()
+	if not gameplay_saved:
+		platform_notice.emit("Não foi possível gravar agora; o save anterior foi preservado.", true)
+	shutdown_finished.emit(gameplay_saved, settings_saved)
+	return {"gameplay_saved": gameplay_saved, "settings_saved": settings_saved, "repeated": false}
+
+
+## Encerramento pedido pela interface: coordena e sai.
+func quit_game() -> void:
+	request_shutdown()
+	get_tree().quit()
+
+
+func is_shutting_down() -> bool:
+	return _shutting_down
+
+
+func get_settings_manager() -> SettingsManager:
+	return _settings
+
+
+func get_performance_manager() -> PerformanceManager:
+	return _performance
+
+
+func get_mode_manager() -> DesktopModeManager:
+	return _modes
+
+
+func get_platform_adapter() -> PlatformAdapter:
+	return _adapter
+
+
+func get_autostart_service() -> AutostartService:
+	return _autostart
 
 
 func get_feeding_system() -> FeedingSystem:
