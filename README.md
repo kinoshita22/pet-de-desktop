@@ -1437,7 +1437,32 @@ tools/build_windows.sh --debug    # com console
 
 O script confere o Godot e os *export templates*, cria só `build/windows/`, exporta e copia `platform/windows/*.ps1` para junto do executável. Ele não baixa nada e não versiona o resultado — `build/` está no `.gitignore`.
 
-**Nesta máquina o pacote não foi gerado:** os *export templates* do Godot 4.4.1 não estão instalados, e instalá-los exigiria baixar ~800 MB sem autorização. O script falha com a mensagem e o caminho esperado. O preset foi validado estaticamente pela suíte de testes.
+Como o runner de testes, ele roda com um `XDG_DATA_HOME` descartável: o `user://` de quem desenvolve não é tocado nem para criar diretório. Os *export templates* continuam sendo lidos do lugar real, por um atalho dentro do temporário.
+
+#### O pacote gerado aqui
+
+Com os *export templates* 4.4.1 instalados, o pacote saiu assim:
+
+```text
+build/windows/
+  ComoAumentarSeuCaramelo.exe               97.520.128 bytes
+  ComoAumentarSeuCaramelo.pck                2.260.688 bytes
+  platform/windows/wallpaper_host.ps1            4.506 bytes
+  platform/windows/autostart.ps1                 2.699 bytes
+  platform/windows/fullscreen_probe.ps1          2.112 bytes
+```
+
+O `.pck` tem 90 arquivos: os três JSON de balanceamento, o quintal já importado, as cenas e os scripts compilados. **Ficaram de fora**, como o preset manda: `tests/`, `tools/`, `docs/`, os `.md`, os `.sh`, o próprio `export_presets.cfg` e qualquer save ou `settings.json`. O conteúdo foi conferido montando o `.pck` num projeto separado e listando o que ele traz.
+
+O pacote também foi **executado a partir do `.pck`**, sem janela e com dados isolados: ele abre sem erro e grava o save no diretório do usuário. Isso valida o conteúdo do pacote — **não** o executável no Windows, que continua sem ter rodado lá.
+
+Um aviso aparece no fim do export e é esperado nesta máquina:
+
+```text
+WARNING: Resources Modification: Could not start rcedit executable.
+```
+
+O `rcedit` é a ferramenta que grava nome do produto, descrição e ícone dentro do `.exe`. Ela não está instalada aqui, então **o executável sai sem esses metadados** — funciona igual, mas aparece sem identificação nas propriedades do arquivo e no Gerenciador de Tarefas. Para resolver, instale o `rcedit` e aponte o caminho em *Editor Settings > Export > Windows > rcedit*, ou desligue `application/modify_resources` no preset se não quiser os metadados.
 
 O pacote é portátil: copiar a pasta é instalar, apagar a pasta é desinstalar. O progresso fica em `%APPDATA%` e sobrevive — apague à parte se quiser mesmo perdê-lo. Antes de apagar, desligue a inicialização automática pelo painel, senão o atalho fica apontando para um executável que não existe mais.
 
@@ -1856,7 +1881,8 @@ O que conferir no cenário:
 ### Integração com o desktop
 
 * **Nada disso foi executado em Windows.** `Progman`/`WorkerW`, o atalho de inicialização e a detecção de tela cheia foram escritos, revisados e exercitados com dublê — o comportamento real continua não verificado. O roteiro está em [`docs/WINDOWS_VALIDATION.md`](docs/WINDOWS_VALIDATION.md), com todos os 25 itens em aberto.
-* **O pacote de Windows não foi gerado.** Os *export templates* do Godot não estão instalados nesta máquina e baixá-los (~800 MB) não foi autorizado. O preset foi validado estaticamente; `tools/build_windows.sh` falha com a instrução exata.
+* **O executável não tem metadados.** O `rcedit` não está instalado nesta máquina, então nome do produto, descrição e ícone não são gravados dentro do `.exe`. O export avisa e conclui; o jogo funciona igual.
+* **O pacote foi gerado, mas não executado em Windows.** O `.pck` foi conferido arquivo a arquivo e roda pelo Godot de Linux; o `.exe` em si nunca abriu num Windows.
 * **Não há bandeja do sistema.** O `MVP_SPEC.md` §19 a pede como forma sempre acessível de pausar ou fechar. O Godot 4 não tem API de bandeja, e uma extensão nativa está fora do escopo. No lugar ficam `Ctrl+Shift+W`, `--windowed` e o botão **Fechar jogo**. **Este é um requisito do MVP que continua em aberto.**
 * **Não há click-through seletivo no papel de parede.** A janela recebe os cliques na área dela; não há recorte por região. Quem quiser usar o desktop normalmente volta para janela.
 * **A detecção de instância única não existe.** O `MVP_SPEC.md` §21 pede que uma segunda instância traga a primeira para frente; duas cópias abertas hoje disputam o mesmo `savegame.json`.
