@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 9 de 12 — Interface principal.** Os sistemas ganharam uma cara: clicar em Caramelo abre um HUD recolhível com energia, força, vínculo, nível e a atividade atual, mais os botões de alimentar, treinar e descansar. **Carinho, salvamento, progresso offline e modo papel de parede continuam fora.**
+**Etapa 10 de 12 — Salvamento e progresso offline.** O progresso agora sobrevive ao fechamento do jogo: energia, força, vínculo, recargas, posição e atividade em andamento são gravados atomicamente, e o tempo em que o jogo ficou fechado é reconciliado na abertura, com teto de oito horas e sem nunca duplicar recompensa. **Carinho, modo papel de parede e configurações continuam fora.**
 
 ## Requisitos
 
@@ -1015,6 +1015,172 @@ Toda a interface usa a mesma compensação de escala, agora extraída para [`UiS
 
 Medido em janelas reais: o painel mantém **264 × ~255 px de tela** em 1850 × 950, 1280 × 720, 1024 × 768 e 640 × 950 — quatro escalas de canvas diferentes (1,137 a 3,0). Em todas, HUD e menu ficam inteiros dentro da tela e não se sobrepõem.
 
+## Salvamento e progresso offline
+
+O progresso sobrevive ao fechamento do processo, e o tempo em que o jogo ficou fechado é reconciliado na abertura seguinte — sem nunca pagar a mesma recompensa duas vezes.
+
+### Onde fica
+
+```text
+user://savegame.json           save principal
+user://savegame.backup.json    cópia do principal anterior
+user://savegame.tmp.json       temporário, existe só durante a escrita
+user://savegame.rejected.json  cópia de um save ilegível ou de versão futura
+```
+
+Sempre em `user://`, **nunca** no diretório do executável nem em `res://`, como pede o `MVP_SPEC.md` §16: mover ou desinstalar o jogo não apaga o progresso, e a versão portátil funciona igual. O formato é JSON legível, sem criptografia nem ofuscação — não há competição no MVP. O conteúdo do arquivo é **dado**, nunca executado.
+
+### Schema versão 1
+
+```jsonc
+{
+  "schema_version": 1,
+  "saved_at_unix": 1758000000,
+  "progression": { "energy": 70, "strength": 0, "bond": 0 },
+  "food_cooldowns": { "kibble": 212.5 },
+  "rest": { "accumulated_seconds": 41.25 },
+  "dog": { "position": { "x": 880.0, "y": 860.0 }, "facing": 1 },
+  "activity": {
+    "type": "exercise",            // feeding | exercise | rest
+    "phase": "running",            // reserved | walking | running
+    "content_id": "push_ups",
+    "remaining_seconds": 18.0,
+    "energy_already_spent": true,
+    "reward_already_applied": false,
+    "target_id": "PushUpsPoint"
+  }
+}
+```
+
+**O que não é persistido, de propósito:** `level` e a lista de desbloqueios. Ambos são derivados da força; guardá-los criaria uma segunda fonte de verdade capaz de divergir do save. Também ficam de fora o deslocamento visual, a fase da respiração, o microcomportamento ocioso e qualquer referência a nó, sinal ou `Callable`.
+
+Campos desconhecidos são **ignorados**, para que um save escrito por uma versão futura menor ainda carregue. Um `schema_version` maior que o suportado é **recusado** — e o arquivo é preservado numa cópia, não destruído.
+
+### Escrita atômica
+
+```text
+1. montar snapshot        5. preservar o principal anterior como backup
+2. validar                6. promover o temporário a principal
+3. escrever o temporário  7. reler o principal final e validar
+4. reler e revalidar
+```
+
+**Nunca faltam as duas cópias ao mesmo tempo.** Se qualquer passo falhar, o último save válido continua no lugar, o temporário é removido e sai um erro claro — sem encerrar o jogo. Uma falha de autosave deixa o estado marcado como sujo, para tentar de novo.
+
+### Recuperação
+
+| Situação | O que acontece |
+| -------- | -------------- |
+| Principal válido | usado |
+| Principal ausente | jogo novo (ou backup, se houver) |
+| Principal ilegível, backup válido | **backup recuperado**, com linha no resumo |
+| Backup ilegível, principal válido | ignorado; o principal segue normal |
+| Ambos ilegíveis | jogo novo, com aviso não bloqueante |
+| Versão futura | recusado; arquivo preservado em `.rejected.json` |
+| Temporário abandonado | ignorado; nunca é promovido sozinho |
+
+### Gatilhos de salvamento
+
+Refeição concluída · início de treino (**depois** do débito) · treino concluído · descanso que realmente recuperou energia · subida de nível · recarga que chegou a zero · autosave periódico · fechamento da janela.
+
+```text
+debounce: 0,5 s     autosave periódico: 30 s
+```
+
+Cada gatilho apenas **marca** o estado como sujo; o `SaveManager` agrupa os próximos e escreve uma vez. É o que impede a recarga, que muda a cada segundo, de virar escrita a cada segundo. O fechamento força a escrita ignorando o debounce — mas o jogo não depende disso: o autosave já garante o essencial.
+
+### Relógio e teto
+
+```text
+raw_elapsed = now_unix − saved_at_unix     (Unix UTC)
+```
+
+| Caso | Resultado |
+| ---- | --------- |
+| `raw_elapsed <= 0` | zero progresso e **zero punição** |
+| Relógio regressivo | idem, com mensagem própria no resumo |
+| Até 8 h | aplicado integralmente |
+| Mais de 8 h | aplicado exatamente **28 800 s** |
+| Timestamp inválido | snapshot recusado |
+
+[`OfflineProgress`](scripts/systems/offline_progress.gd) é **pura**: recebe `now_unix` por parâmetro e não abre arquivo, não consulta o relógio e não conhece cena alguma. Há um teste que lê o código-fonte para garantir.
+
+### Ordem do cálculo offline
+
+```text
+1. tempo válido, limitado a 8 h        6. se terminou, o resto vira descanso
+2. restaurar o snapshot em memória     7. sem atividade, todo o tempo é descanso
+3. reduzir as recargas existentes      8. produzir o relatório
+4. cancelar atividade só reservada     9. atualizar o timestamp
+5. resolver atividade já iniciada     10. gravar o estado reconciliado
+```
+
+O passo 10 é o que impede a duplicação: uma segunda abertura já encontra o estado reconciliado.
+
+### Alimentação offline
+
+* **Reservada ou a caminho** — cancelada. Nenhuma energia, nenhum vínculo, nenhuma recarga.
+* **`EATING` incompleto** — só o tempo restante é reduzido; Caramelo volta ao `FoodPoint` já comendo, sem repetir a caminhada, sem recompensa e sem recarga.
+* **`EATING` concluído** — energia e vínculo uma única vez, a recarga começa **no momento lógico da conclusão** e corre só pelo tempo posterior a ela, e o que sobra vira descanso.
+
+Com energia cheia: a energia aplicada pode ser zero, mas o vínculo ainda sobe, a recarga ainda começa e a refeição ainda conta como concluída.
+
+### Treino offline
+
+* **Reservado ou a caminho** — cancelado, sem débito e sem força.
+* **`TRAINING` incompleto** — retoma no ponto do exercício com o tempo restante. **A energia não é debitada de novo**: ela saiu ao entrar em `TRAINING`, antes de o jogo fechar.
+* **`TRAINING` concluído** — força uma única vez, nível e desbloqueios recalculados, e o resto do tempo vira descanso.
+
+Um snapshot que diga `phase: "running"` com `energy_already_spent: false` é **incoerente e recusado** — seria um treino de graça.
+
+### Descanso e recargas offline
+
+A taxa é a mesma do jogo aberto: **1 energia por 60 s**, vinda de `data/levels.json`. O acumulador fracionário salvo entra no cálculo (`30 s guardados + 30 s de ausência = +1`), só unidades inteiras são aplicadas, o novo resto é preservado, a energia respeita o teto e o excedente após a saturação é descartado. Descanso não mexe em força nem em vínculo.
+
+Recargas existentes correm por toda a ausência (`max(0, restante − elapsed)`), nunca ficam negativas e uma não afeta a outra. A interface recebe apenas o estado final reconciliado, não uma enxurrada de sinais por segundo.
+
+### Retomada de atividade
+
+Na abertura, uma atividade incompleta é recolocada pelas APIs explícitas `Caramelo.restore_activity`, `FeedingSystem.restore_pending_meal` e `ExerciseSystem.restore_pending_exercise` — nenhuma variável privada é forçada de fora. `activity_started` **não** é reemitido, justamente para que o sistema não cobre a energia outra vez; a conclusão sai normalmente quando o tempo acabar em runtime.
+
+A posição salva é validada contra o polígono caminhável. Se cair fora, Caramelo vai para um ponto seguro — o polígono nunca é afrouxado para aceitar um save ruim. Quando há atividade retomada, vale o ponto do equipamento, não a posição salva.
+
+### Resumo "Enquanto você esteve fora"
+
+O painel aparece centralizado, bloqueia cliques no mundo enquanto aberto (sem pausar o jogo) e some com um botão claro. Ele **não aparece** em jogo novo nem quando a ausência não produziu nenhum evento.
+
+Mostra apenas fatos reais — um ganho zero nunca vira linha:
+
+```text
+Você ficou fora por 2h 15min.
+Caramelo recuperou 70 de energia.
+Caramelo terminou de comer Racao e ganhou 1 de vínculo.
+Caramelo terminou o exercício Flexoes e ganhou 5 de força.
+2 alimentos ficaram disponíveis novamente.
+O relógio do sistema retrocedeu; nenhum progresso offline foi aplicado.
+O save principal não pôde ser lido. O backup foi recuperado.
+```
+
+`OfflineProgress` devolve um relatório **estruturado**; quem escolhe as palavras é a interface.
+
+### Ordem de inicialização
+
+Tudo acontece dentro do `_ready` da sessão, antes do primeiro quadro — a interface nunca chega a mostrar valores iniciais falsos:
+
+```text
+1. carregar configuração   5. restaurar ou cancelar a atividade
+2. carregar principal      6. ligar o autosave
+   ou backup               7. anunciar `session_ready`
+3. validar o snapshot      8. gravar o estado reconciliado
+4. reconciliar o tempo
+```
+
+Os sistemas só são configurados depois da carga, então antes de `session_ready` nenhum pedido é aceito: o pote, os hotspots e os botões do HUD recusam com `NOT_CONFIGURED`.
+
+### Recuperação manual
+
+O save é JSON legível. Se o principal quebrar, basta copiar `savegame.backup.json` por cima de `savegame.json` no diretório de dados do usuário. Um save recusado por versão futura fica em `savegame.rejected.json` e pode ser guardado até a versão nova do jogo chegar.
+
 ## Estrutura da cena principal
 
 ```text
@@ -1022,7 +1188,8 @@ Main                    (Node)
 ├── GameSession         (Node)        ← configuração, modelo e resolução de referências
 │   ├── FeedingSystem   (Node)        ← refeição: pedido, recompensa e recargas
 │   ├── ExerciseSystem  (Node)        ← treino: pedido, débito, recompensa e reação
-│   └── RestSystem      (Node)        ← descanso: recuperação e tendência autônoma
+│   ├── RestSystem      (Node)        ← descanso: recuperação e tendência autônoma
+│   └── SaveManager     (Node)        ← snapshot, escrita atômica e recuperação
 ├── World               (Node2D)
 │   └── Backyard        (instância de backyard.tscn)
 │       ├── Background        (Sprite2D)     z = -100
@@ -1044,7 +1211,8 @@ Main                    (Node)
     ├── FoodMenu         (instância de food_menu.tscn)
     ├── ExerciseMenu     (instância de exercise_menu.tscn)
     ├── TrainingFeedback (instância de training_feedback.tscn)
-    └── MainHUD          (instância de main_hud.tscn)
+    ├── MainHUD          (instância de main_hud.tscn)
+    └── OfflineSummary   (instância de offline_summary.tscn)
 ```
 
 `GameSession` é o primeiro filho de `Main`, antes de `World`: ela carrega a configuração no `_ready` e o resto da cena pode contar com o modelo já pronto.
@@ -1114,7 +1282,12 @@ godot --headless --path . --script tests/test_rest_and_idle.gd
 
 # HUD principal e menus contextuais — 103 verificações
 godot --headless --path . --script tests/test_main_ui.gd
+
+# salvamento e progresso offline — 184 verificações
+godot --headless --path . --script tests/test_save_and_offline.gd
 ```
+
+Cada suíte trabalha num **diretório de save isolado** dentro de `user://`, apagado ao final: nenhuma delas encosta no save real nem na outra.
 
 **`test_caramelo_controller.gd`** cobre estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
 
@@ -1127,6 +1300,8 @@ godot --headless --path . --script tests/test_main_ui.gd
 **`test_rest_and_idle.gd`** cobre a seção `rest` e onze formas de configuração inválida, o acumulador fracionário (59 s nada, o segundo restante +1, descansos separados somando), a ausência de recuperação nos outros cinco estados, deltas inválidos, saturação sem crédito oculto, o descanso solicitado com suas cinco recusas, a tendência crescente por faixa de energia, a garantia de não encadear descansos, os cinco microcomportamentos com sorteio reprodutível e o deslocamento apenas visual de `CHASE_FLY`.
 
 **`test_main_ui.gd`** cobre o HUD único e oculto, a abertura por seleção sem alterar nada, a ausência de conexões duplicadas, os quatro atributos e seus textos derivados da configuração, os dez textos de atividade, os três fluxos em cliques, o menu de exercícios com bloqueio por nível e por energia, os atalhos do pote e dos hotspots, a exclusividade dos menus, o recolhimento por tempo simulado, o Escape em duas etapas, o toast e a garantia de que nenhum script de UI chama mutador do modelo.
+
+**`test_save_and_offline.gd`** cobre o schema e dezesseis formas de snapshot inválido, a escrita atômica com falhas simuladas por um adaptador de arquivos, a política de backup e de recuperação, as regras do relógio com `now_unix` injetado, a reconciliação de alimentação e treino em cada fase, o descanso com acumulador, as recargas, a retomada de atividade incompleta e os gatilhos de autosave com debounce.
 
 Os casos negativos de configuração montam dados errados **em memória** ou escrevem em `user://`. Os arquivos reais de `data/` nunca são tocados.
 
@@ -1197,6 +1372,22 @@ Durante um treino, o pote recusa qualquer alimento, e vice-versa. Nenhum pedido 
 
 Verificado em 1920 × 1080, 1280 × 720, 1024 × 768 e 640 × 1000: a faixa de feedback mantém ~277 × 37 px de tela e nunca sai do enquadramento.
 
+### Salvamento entre processos
+
+Além das suítes, o ciclo foi validado com **processos separados de verdade**, num diretório de dados isolado:
+
+```text
+1. abrir, alterar o estado, salvar, encerrar
+2. reabrir  → energia, força, vínculo e nível restaurados
+3. iniciar um treino, salvar, encerrar
+4. recuar só o timestamp do save e reabrir
+            → o treino conclui offline e a força entra uma vez
+5. reabrir duas vezes  → a recompensa NÃO se repete
+6. corromper o principal e reabrir  → recuperado pelo backup
+7. recuar o timestamp em 20 h  → aplicadas exatamente 8 h
+8. adiantar o timestamp  → zero progresso e zero punição
+```
+
 ### Interface
 
 1. **Clique em Caramelo.** O HUD aparece no canto inferior esquerdo, com nível, energia, força, vínculo e a atividade atual.
@@ -1238,13 +1429,15 @@ O que conferir no cenário:
 
 ## O que foi implementado nesta etapa
 
-* `scenes/ui/main_hud.tscn` + `scripts/ui/main_hud.gd`: o HUD recolhível, com resumo, atividade, barra de ações e toast.
-* `scenes/ui/exercise_menu.tscn` + `scripts/ui/exercise_menu.gd`: o menu compacto dos dois exercícios.
-* `scripts/ui/ui_scale.gd`: a compensação de escala, extraída da duplicação entre o menu de alimentos e o feedback de treino.
-* `tests/test_main_ui.gd`: 103 verificações permanentes.
-* `scripts/dog/caramelo.gd` e `scenes/dog/caramelo.tscn`: a `SelectionArea` e o sinal `selected`, mais `get_training_style()`.
-* `scripts/ui/food_menu.gd` e `scripts/ui/training_feedback.gd`: passam a usar `UiScale`; o de alimentos ganhou `set_anchor_rect` para se encostar no HUD.
-* `scenes/main/main.tscn`: o menu de exercícios e o HUD em `Interface`.
+* `scripts/systems/save_manager.gd`: snapshot, validação, escrita atômica, backup, recuperação, debounce e autosave.
+* `scripts/systems/offline_progress.gd`: a reconciliação do tempo ausente, pura e testável.
+* `scenes/ui/offline_summary.tscn` + `scripts/ui/offline_summary.gd`: o painel "Enquanto você esteve fora".
+* `tests/test_save_and_offline.gd`: 184 verificações permanentes.
+* `scripts/systems/progression_model.gd`: `restore()` e o sinal `restored`, sem setters públicos de atributo.
+* `scripts/systems/feeding_system.gd`, `exercise_system.gd`, `rest_system.gd`: APIs explícitas de leitura e restauração do próprio estado.
+* `scripts/dog/caramelo.gd`: `restore_placement`, `restore_activity`, `get_state_remaining` e `get_facing`.
+* `scripts/systems/game_session.gd`: a ordem de abertura, os gatilhos de save e `session_ready`.
+* As seis suítes anteriores passaram a usar um diretório de save isolado.
 
 **Nenhum dado de balanceamento foi tocado**: `data/` está byte a byte igual, assim como o asset do quintal.
 
@@ -1274,6 +1467,15 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **Sem fila e sem cancelamento.** Depois de aceito, o pedido vai até o fim: `EATING` é não interrompível por especificação, e não há como desistir a caminho.
 * **O menu não mostra energia nem vínculo atuais.** Ele lista só o que cada alimento dá. As barras permanentes são o HUD da Etapa 9.
 * **Valores provisórios.** As recargas de 5, 15 e 10 min seguem pendentes de playtest (ponto em aberto A-2 do `MVP_SPEC.md`).
+
+### Salvamento
+
+* **Um único slot.** Sem importação, exportação, nuvem ou conta — está fora do escopo do MVP.
+* **Sem criptografia nem anticheat.** O `MVP_SPEC.md` §16 pede formato legível; editar o JSON à mão funciona.
+* **O resumo offline não é interativo.** Ele informa e fecha; não há como desfazer nem inspecionar detalhes.
+* **A reconciliação assume a taxa de descanso atual.** Mudar `energy_per_minute` entre duas sessões faz o tempo já decorrido ser convertido pela taxa nova.
+* **O relógio é o do sistema.** Não há verificação de tempo além das regras da §17 — adiantar o relógio rende, no máximo, as oito horas do teto.
+* **`NOTIFICATION_WM_CLOSE_REQUEST` é o único gatilho de fechamento.** Um encerramento forçado (kill, queda de energia) perde o que estiver dentro da janela do autosave.
 
 ### Interface
 

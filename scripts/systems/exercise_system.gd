@@ -170,6 +170,22 @@ func is_running() -> bool:
 	return _started
 
 
+## Restaura um treino vindo de um save. `already_started` diz se a energia ja foi
+## debitada — quando verdadeiro, ela **nao** e cobrada de novo.
+func restore_pending_exercise(exercise_id: StringName, already_started: bool) -> bool:
+	if _config == null or _config.get_exercise(exercise_id).is_empty():
+		return false
+	_pending_exercise = exercise_id
+	_started = already_started
+	return true
+
+
+## Descarta o treino pendente sem debito nem recompensa.
+func clear_pending_exercise() -> void:
+	_pending_exercise = &""
+	_started = false
+
+
 static func rejection_name(reason: int) -> String:
 	if reason < 0 or reason >= REJECTION_NAMES.size():
 		return "DESCONHECIDO(%d)" % reason

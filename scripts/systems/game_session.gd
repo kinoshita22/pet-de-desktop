@@ -14,12 +14,21 @@ extends Node
 
 const GROUP := &"game_session"
 
+## Emitido uma unica vez, quando o estado ja foi carregado, reconciliado e aplicado.
+## Antes disso os sistemas nao estao configurados e nenhuma interacao e aceita.
+signal session_ready()
+## Relatorio estruturado da reconciliacao offline; a interface e quem o transforma em texto.
+signal offline_progress_applied(report: Dictionary)
+
 var _config: GameConfig
 var _model: ProgressionModel
 var _feeding: FeedingSystem
 var _exercise: ExerciseSystem
 var _rest: RestSystem
+var _save: SaveManager
 var _dog: Caramelo
+var _ready_emitted := false
+var _last_report: Dictionary = {}
 var _food_point: Marker2D
 
 
@@ -84,6 +93,122 @@ func _wire_dependencies() -> void:
 	var training_points := _collect_training_points(scope)
 	_rest.configure(_config, _model, _dog, training_points.get(&"RestPoint"))
 
+	_save = _find_descendant(self, func(node: Node) -> bool: return node is SaveManager) as SaveManager
+	if _save == null:
+		push_error("GameSession: nenhum SaveManager entre os filhos.")
+		return
+	_save.configure(_config, _model, _feeding, _exercise, _rest, _dog)
+	_connect_save_triggers()
+	_start_session(training_points)
+
+
+## Eventos que tornam o estado digno de ir a disco. Cada um apenas **marca** o save como
+## sujo; o `SaveManager` agrupa os proximos e escreve uma vez so depois do debounce, de
+## modo que a recarga pingando por segundo nunca vira escrita por quadro.
+func _connect_save_triggers() -> void:
+	_feeding.feeding_completed.connect(func(_id: StringName, _e: int, _b: int) -> void:
+		_save.mark_dirty())
+	# O treino marca ao **iniciar**, ja com a energia debitada, e ao concluir.
+	_exercise.exercise_started.connect(func(_id: StringName, _spent: int) -> void:
+		_save.mark_dirty())
+	_exercise.exercise_completed.connect(func(_id: StringName, _gain: int) -> void:
+		_save.mark_dirty())
+	_rest.rest_energy_restored.connect(func(_amount: int) -> void: _save.mark_dirty())
+	_model.level_changed.connect(func(_p: int, _n: int) -> void: _save.mark_dirty())
+	# Recarga so importa quando muda de estado material: virar disponivel.
+	_feeding.cooldown_changed.connect(func(_id: StringName, remaining: float) -> void:
+		if remaining <= 0.0:
+			_save.mark_dirty())
+
+
+## Ordem explicita de abertura. Tudo acontece dentro de `_ready`, antes do primeiro quadro,
+## de modo que a interface nunca chega a mostrar valores iniciais falsos.
+##
+##   1. carregar principal ou backup      5. restaurar ou cancelar a atividade
+##   2. validar o snapshot                6. ligar o autosave
+##   3. restaurar o estado base           7. anunciar `session_ready`
+##   4. reconciliar o tempo ausente       8. gravar o estado reconciliado
+func _start_session(training_points: Dictionary) -> void:
+	var loaded := _save.load_snapshot(_model.get_max_energy())
+	var snapshot: Variant = loaded["snapshot"]
+	var report: Dictionary = {}
+
+	if snapshot is Dictionary:
+		var now_unix := int(Time.get_unix_time_from_system())
+		var reconciled := OfflineProgress.reconcile(snapshot as Dictionary, _config, now_unix,
+			_model.get_max_energy())
+		var final_snapshot: Dictionary = reconciled["snapshot"]
+		report = reconciled["report"]
+		_apply_snapshot(final_snapshot, training_points)
+		if String(loaded["reason"]) != "":
+			report["recovery_message"] = loaded["reason"]
+			report["has_events"] = true
+	elif String(loaded["reason"]) != "":
+		report = {"has_events": true, "recovery_message": loaded["reason"],
+			"elapsed_seconds": 0.0, "clock_went_backwards": false}
+
+	_last_report = report
+	_save.set_enabled(true)
+	_ready_emitted = true
+	session_ready.emit()
+	if not report.is_empty() and bool(report.get("has_events", false)):
+		offline_progress_applied.emit(report)
+	# O estado reconciliado precisa ir a disco agora: sem isso, uma segunda abertura
+	# reaplicaria as mesmas recompensas.
+	_save.save_now()
+
+
+## Aplica um snapshot ja reconciliado ao modelo, aos sistemas e a Caramelo.
+func _apply_snapshot(snapshot: Dictionary, training_points: Dictionary) -> void:
+	var progression: Dictionary = snapshot.get("progression", {})
+	_model.restore(int(progression.get("energy", 0)), int(progression.get("strength", 0)),
+		int(progression.get("bond", 0)))
+	_feeding.restore_cooldowns(snapshot.get("food_cooldowns", {}))
+	_rest.restore_accumulated(float((snapshot.get("rest", {}) as Dictionary)
+		.get("accumulated_seconds", 0.0)))
+
+	var dog_data: Dictionary = snapshot.get("dog", {})
+	var position_data: Dictionary = dog_data.get("position", {})
+	var saved_position := Vector2(float(position_data.get("x", 0.0)), float(position_data.get("y", 0.0)))
+	var facing := int(dog_data.get("facing", 1))
+	if not _dog.restore_placement(saved_position, facing):
+		# Posicao invalida: Caramelo vai para um ponto seguro. O poligono nao e afrouxado.
+		push_warning("GameSession: posicao salva fora da area caminhavel; usando ponto seguro.")
+		_dog.set_walkable_polygon(_dog_polygon())
+
+	var activity: Variant = snapshot.get("activity")
+	if activity is Dictionary:
+		_restore_activity(activity as Dictionary, training_points)
+
+
+func _dog_polygon() -> PackedVector2Array:
+	var walkable := _find_descendant(get_parent(), func(node: Node) -> bool:
+		return node is CollisionPolygon2D) as CollisionPolygon2D
+	return walkable.polygon if walkable != null else PackedVector2Array()
+
+
+## Recoloca uma atividade que ficou pela metade: o cachorro volta direto ao ponto, sem
+## repetir a caminhada, sem novo debito e sem recompensa antecipada.
+func _restore_activity(activity: Dictionary, training_points: Dictionary) -> void:
+	var type := String(activity.get("type", ""))
+	var phase := String(activity.get("phase", ""))
+	var content_id := StringName(String(activity.get("content_id", "")))
+	var remaining := float(activity.get("remaining_seconds", 0.0))
+	if phase != "running" or remaining <= 0.0:
+		return
+	match type:
+		"feeding":
+			var point: Variant = training_points.get(&"FoodPoint")
+			if _feeding.restore_pending_meal(content_id) and point is Vector2:
+				_dog.restore_activity(Caramelo.State.EATING, remaining, point as Vector2)
+		"exercise":
+			var exercise := _config.get_exercise(content_id)
+			var marker := StringName(String(exercise.get("training_point", "")))
+			var target: Variant = training_points.get(marker)
+			# `already_started = true`: a energia ja saiu antes de fechar o jogo.
+			if _exercise.restore_pending_exercise(content_id, true) and target is Vector2:
+				_dog.restore_activity(Caramelo.State.TRAINING, remaining, target as Vector2)
+
 
 ## Marcadores de treino, por nome, ja no espaco de coordenadas de Caramelo. O sistema de
 ## exercicios recebe o mapa pronto e nunca procura nada na arvore.
@@ -136,6 +261,20 @@ func get_exercise_system() -> ExerciseSystem:
 
 func get_rest_system() -> RestSystem:
 	return _rest
+
+
+func get_save_manager() -> SaveManager:
+	return _save
+
+
+## A sessao ja carregou e liberou interacao?
+func is_session_ready() -> bool:
+	return _ready_emitted
+
+
+## Relatorio da ultima reconciliacao offline; vazio quando nao houve nenhuma.
+func get_offline_report() -> Dictionary:
+	return _last_report.duplicate(true)
 
 
 func get_caramelo() -> Caramelo:

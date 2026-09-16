@@ -123,6 +123,11 @@ func is_resting() -> bool:
 	return _resting
 
 
+## Restaura a fracao de segundo acumulada por um save. Valores invalidos viram zero.
+func restore_accumulated(seconds: float) -> void:
+	_accumulated = seconds if is_finite(seconds) and seconds >= 0.0 else 0.0
+
+
 ## Tendencia atual de descanso autonomo, de 0 a 1. Ver `_weight_for_energy`.
 func get_rest_tendency() -> float:
 	return _weight_for_energy(_model.get_energy() if _model != null else 0)

@@ -28,6 +28,11 @@ signal bond_changed(previous_value: int, new_value: int)
 signal level_changed(previous_level: int, new_level: int)
 signal unlock_granted(unlock_id: StringName)
 
+## Emitido uma unica vez ao restaurar um save. Substitui a enxurrada de
+## `strength_changed`/`level_changed`/`unlock_granted` que um replay produziria: os
+## desbloqueios historicos nao sao concedidos de novo como se fossem novidade.
+signal restored()
+
 var _config: GameConfig
 var _energy: int = 0
 var _max_energy: int = 0
@@ -121,6 +126,30 @@ func is_exercise_unlocked(exercise_id: StringName) -> bool:
 	if exercise.is_empty():
 		return false
 	return get_level() >= int(exercise["required_level"])
+
+
+## Restaura energia, forca e vinculo **como unidade**, a partir de um save.
+##
+## Valida tudo antes de escrever qualquer campo: um snapshot recusado nao deixa o modelo
+## meio aplicado. O nivel continua derivado da forca — nenhum `level` externo e aceito, e
+## nao existe setter publico de atributo.
+##
+## Emite apenas `restored`, nunca os sinais de ganho: recuperar um save nao e progredir.
+func restore(energy: int, strength: int, bond: int) -> bool:
+	if energy < 0 or energy > _max_energy:
+		push_warning("ProgressionModel: energia %d fora de 0..%d." % [energy, _max_energy])
+		return false
+	if strength < 0:
+		push_warning("ProgressionModel: forca negativa (%d)." % strength)
+		return false
+	if bond < 0:
+		push_warning("ProgressionModel: vinculo negativo (%d)." % bond)
+		return false
+	_energy = energy
+	_strength = strength
+	_bond = bond
+	restored.emit()
+	return true
 
 
 # --------------------------------------------------------------------------------------

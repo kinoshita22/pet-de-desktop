@@ -24,6 +24,8 @@ func _process(_delta: float) -> bool:
 	if _done:
 		return true
 	_done = true
+	# Diretorio de save proprio: nenhuma suite encosta no save real nem na outra.
+	SaveManager.use_isolated_directory("test_caramelo_controller")
 	_viewport = SubViewport.new()
 	_viewport.size = Vector2i(1920, 1080)
 	root.add_child(_viewport)
@@ -403,6 +405,7 @@ func _test_main_scene_has_one_caramelo() -> void:
 
 
 func _report() -> void:
+	SaveManager.clear_isolated_directory()
 	print("\n" + "=".repeat(70))
 	if _failures.is_empty():
 		print("TODOS OS TESTES PASSARAM  (%d verificacoes)" % _passed)

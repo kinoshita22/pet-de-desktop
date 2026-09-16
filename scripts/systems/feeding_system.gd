@@ -132,6 +132,47 @@ func has_pending_meal() -> bool:
 	return _pending_food != &""
 
 
+## Recargas restantes por alimento, para o save. Apenas valores maiores que zero.
+func get_cooldowns() -> Dictionary:
+	var out: Dictionary = {}
+	for food_id: StringName in _cooldowns:
+		var remaining := float(_cooldowns[food_id])
+		if remaining > 0.0:
+			out[String(food_id)] = remaining
+	return out
+
+
+## Aplica recargas vindas de um save, sem emitir a serie de sinais por segundo: a
+## interface recebe so o estado final ja reconciliado.
+func restore_cooldowns(cooldowns: Dictionary) -> void:
+	_cooldowns.clear()
+	_signalled_second.clear()
+	for key in cooldowns:
+		var food_id := StringName(key)
+		if _config != null and _config.get_food(food_id).is_empty():
+			continue
+		var remaining := float(cooldowns[key])
+		if remaining > 0.0:
+			_cooldowns[food_id] = remaining
+			_signalled_second[food_id] = ceili(remaining)
+			cooldown_changed.emit(food_id, remaining)
+
+
+## Restaura a refeicao pendente de um save, **sem** mandar Caramelo caminhar de novo:
+## quem recoloca o cachorro no lugar certo e a sessao.
+func restore_pending_meal(food_id: StringName) -> bool:
+	if _config == null or _config.get_food(food_id).is_empty():
+		return false
+	_pending_food = food_id
+	return true
+
+
+## Descarta a refeicao pendente sem recompensa. Usado quando a reconciliacao offline
+## cancela uma refeicao que ainda nao tinha comecado.
+func clear_pending_meal() -> void:
+	_pending_food = &""
+
+
 static func rejection_name(reason: int) -> String:
 	if reason < 0 or reason >= REJECTION_NAMES.size():
 		return "DESCONHECIDO(%d)" % reason

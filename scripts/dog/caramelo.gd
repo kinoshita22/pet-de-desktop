@@ -130,6 +130,10 @@ var _facing := 1
 ## Impede dois descansos seguidos, seguindo o principio da secao 9 do `MVP_SPEC.md`
 ## de nao repetir o mesmo comportamento autonomo duas vezes em sequencia.
 var _rested_last := false
+## Marca que a sessao ja recolocou Caramelo numa atividade retomada de um save. Como
+## `_ready` de Caramelo roda **depois** do `_ready` da sessao (ele esta mais fundo na
+## arvore), sem isto a inicializacao padrao zeraria a duracao da atividade restaurada.
+var _restored := false
 
 var _walkable: PackedVector2Array = PackedVector2Array()
 var _bounds := Rect2()
@@ -150,6 +154,13 @@ func _ready() -> void:
 	# A captacao de clique em 2D depende disto; o padrao varia conforme o viewport.
 	get_viewport().physics_object_picking = true
 	_selection_area.input_event.connect(_on_selection_input)
+	# A area clicavel espelha conforme a direcao, que pode ter vindo de um save.
+	_selection_shape.position.x = absf(_selection_shape.position.x) * -signf(float(_facing))
+	if _restored:
+		# Estado ja veio de um save: so falta o visual, que ainda nao existia.
+		if _visual != null and _visual.has_method("play_state"):
+			_visual.call("play_state", _state)
+		return
 	_enter_state(State.IDLE)
 
 
@@ -253,6 +264,18 @@ func get_reserved_activity() -> int:
 	return _reserved_activity
 
 
+## Segundos que faltam para o estado atual terminar sozinho; zero quando ele nao tem
+## duracao propria (`IDLE` e `WALKING`).
+func get_state_remaining() -> float:
+	if _state_duration <= 0.0:
+		return 0.0
+	return maxf(_state_duration - _state_elapsed, 0.0)
+
+
+func get_facing() -> int:
+	return _facing
+
+
 func has_reserved_activity() -> bool:
 	return _reserved_activity != -1
 
@@ -311,6 +334,45 @@ static func idle_behavior_name(behavior: int) -> String:
 ## Estilo do treino em curso, para quem precise descrever a atividade.
 func get_training_style() -> StringName:
 	return _training_style
+
+
+## Recoloca Caramelo numa posicao e direcao vindas de um save, sem transicao de estado.
+## A posicao e recusada se cair fora da area caminhavel — o poligono nunca e afrouxado
+## para aceitar um save ruim.
+func restore_placement(target: Vector2, facing: int) -> bool:
+	if not target.is_finite():
+		return false
+	_set_facing(1 if facing >= 0 else -1)
+	if _walkable.size() >= 3 and not _is_position_valid(target):
+		return false
+	position = target
+	return true
+
+
+## Recoloca Caramelo dentro de uma atividade ja em andamento, com o tempo que falta.
+##
+## Nao emite `activity_started`: a atividade nao esta comecando agora, ela continua de
+## onde parou — emitir de novo faria o sistema cobrar a energia uma segunda vez. So
+## `state_changed` sai, para que visual e HUD se sincronizem.
+func restore_activity(activity: int, remaining_seconds: float, at_position: Vector2) -> bool:
+	if not ACTIVITIES.has(activity) or remaining_seconds <= 0.0:
+		return false
+	if at_position.is_finite():
+		position = at_position
+	var previous := _state
+	_waypoints = PackedVector2Array()
+	_pending_activity = -1
+	_reserved_activity = activity
+	_state = activity
+	_state_elapsed = 0.0
+	_state_duration = remaining_seconds
+	_restored = true
+	velocity = Vector2.ZERO
+	if _visual != null and _visual.has_method("play_state"):
+		_visual.call("play_state", activity)
+	if previous != activity:
+		state_changed.emit(previous, activity)
+	return true
 
 
 ## Seleciona Caramelo sem passar por evento de entrada. E o caminho que o clique real
