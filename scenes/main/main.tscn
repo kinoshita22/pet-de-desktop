@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=18 format=3]
 
 [ext_resource type="Script" path="res://scripts/systems/game_session.gd" id="1_session"]
 [ext_resource type="PackedScene" path="res://scenes/environment/backyard.tscn" id="2_backyard"]
@@ -13,6 +13,10 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/offline_summary.tscn" id="11_summary"]
 [ext_resource type="Script" path="res://scripts/systems/evolution_system.gd" id="12_evo"]
 [ext_resource type="Script" path="res://scripts/systems/affection_system.gd" id="13_aff"]
+[ext_resource type="Script" path="res://scripts/systems/settings_manager.gd" id="14_settings"]
+[ext_resource type="Script" path="res://scripts/systems/performance_manager.gd" id="15_perf"]
+[ext_resource type="Script" path="res://scripts/platform/desktop_mode_manager.gd" id="16_modes"]
+[ext_resource type="PackedScene" path="res://scenes/ui/settings_panel.tscn" id="17_settings_panel"]
 
 [node name="Main" type="Node"]
 
@@ -34,6 +38,15 @@ script = ExtResource("12_evo")
 [node name="AffectionSystem" type="Node" parent="GameSession"]
 script = ExtResource("13_aff")
 
+[node name="SettingsManager" type="Node" parent="GameSession"]
+script = ExtResource("14_settings")
+
+[node name="PerformanceManager" type="Node" parent="GameSession"]
+script = ExtResource("15_perf")
+
+[node name="DesktopModeManager" type="Node" parent="GameSession"]
+script = ExtResource("16_modes")
+
 [node name="SaveManager" type="Node" parent="GameSession"]
 script = ExtResource("10_save")
 
@@ -48,6 +61,8 @@ script = ExtResource("10_save")
 [node name="ExerciseMenu" parent="Interface" instance=ExtResource("8_exmenu")]
 
 [node name="TrainingFeedback" parent="Interface" instance=ExtResource("6_feedback")]
+
+[node name="SettingsPanel" parent="Interface" instance=ExtResource("17_settings_panel")]
 
 [node name="MainHUD" parent="Interface" instance=ExtResource("9_hud")]
 

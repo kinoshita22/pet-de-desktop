@@ -45,6 +45,11 @@ var _show_id: StringName = &""
 var _show_time := 0.0
 var _show_duration := 0.0
 
+## Gerenciador de desempenho, quando existe. Sem ele, o no desenha todo quadro — e o que
+## os testes fazem, chamando `_process` na mao.
+var _performance: PerformanceManager
+var _visual_debt := 0.0
+
 @onready var _tail: Node2D = $Tail
 @onready var _legs_front: Node2D = $LegsFront
 @onready var _legs_back: Node2D = $LegsBack
@@ -140,7 +145,31 @@ func set_facing(direction: int) -> void:
 	_facing = -1 if direction < 0 else 1
 
 
+func set_performance_manager(manager: PerformanceManager) -> void:
+	_performance = manager
+
+
+## Separa **quando** desenhar de **o que** desenhar.
+##
+## Em baixo consumo ou papel de parede o perfil pede 10 quadros por segundo; em vez de
+## animar em 60 e jogar fora, o no acumula o tempo e anima uma vez com o delta somado. A
+## duracao de tudo continua a mesma — respiracao, transformacao e comemoracao andam por
+## tempo, nao por quadro —, mas o trabalho por segundo cai junto com o perfil.
 func _process(delta: float) -> void:
+	_visual_debt += delta
+	var interval := _performance.get_visual_interval() if _performance != null else 0.0
+	# Acima de ~59 FPS o intervalo e menor que um quadro: desenhar sempre sai mais barato
+	# do que contabilizar.
+	if interval > 1.0 / 59.0 and _visual_debt < interval:
+		return
+	var step := _visual_debt
+	_visual_debt = 0.0
+	if _performance != null:
+		_performance.count_visual_update()
+	_animate(step)
+
+
+func _animate(delta: float) -> void:
 	_time += delta
 	_idle_time += delta
 	if _morph > 0.0:
