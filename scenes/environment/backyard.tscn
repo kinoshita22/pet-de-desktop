@@ -1,0 +1,42 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/environment/backyard.gd" id="1_backyard"]
+[ext_resource type="Texture2D" uid="uid://b7ssquil7r7pt" path="res://assets/backgrounds/quintal_mvp.png" id="2_quintal"]
+
+[node name="Backyard" type="Node2D"]
+script = ExtResource("1_backyard")
+
+[node name="Background" type="Sprite2D" parent="."]
+texture_filter = 2
+z_index = -100
+position = Vector2(960, 540)
+scale = Vector2(1.1483254, 1.1483254)
+texture = ExtResource("2_quintal")
+
+[node name="WorldBounds" type="Area2D" parent="."]
+collision_layer = 1
+collision_mask = 0
+monitoring = false
+monitorable = false
+
+[node name="WalkableCollision" type="CollisionPolygon2D" parent="WorldBounds"]
+polygon = PackedVector2Array(344.5, 677.2, 643.1, 656.6, 803.8, 658.9, 1148.3, 661.1, 1297.6, 665.7, 1481.3, 672.6, 1630.6, 700.2, 1699.5, 743.8, 1685.7, 821.9, 1639.8, 865.6, 1538.8, 918.4, 1441.1, 987.3, 1320.6, 1007.9, 803.8, 1010.2, 700.5, 980.4, 625.8, 918.4, 493.8, 897.7, 344.5, 881.6, 292.8, 855.2)
+
+[node name="InteractionPoints" type="Node2D" parent="."]
+
+[node name="FoodPoint" type="Marker2D" parent="InteractionPoints"]
+position = Vector2(941.6, 792.1)
+
+[node name="TrainingPoint" type="Marker2D" parent="InteractionPoints"]
+position = Vector2(689, 746.1)
+
+[node name="RestPoint" type="Marker2D" parent="InteractionPoints"]
+position = Vector2(1217.2, 734.6)
+
+[node name="CharacterLayer" type="Node2D" parent="."]
+
+[node name="PropsLayer" type="Node2D" parent="."]
+z_index = 10
+
+[node name="ForegroundLayer" type="Node2D" parent="."]
+z_index = 20
