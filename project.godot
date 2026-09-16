@@ -1,0 +1,28 @@
+; Engine configuration file.
+; Projeto: Como Aumentar Seu Caramelo
+; Fonte oficial de requisitos: MVP_SPEC.md
+
+config_version=5
+
+[application]
+
+config/name="Como Aumentar Seu Caramelo"
+config/description="Jogo 2D idle de desktop: cuide, alimente e treine um vira-lata caramelo."
+run/main_scene="res://scenes/main/main.tscn"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+run/max_fps=60
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/size/mode=0
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0
