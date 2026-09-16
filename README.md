@@ -6,7 +6,7 @@ Jogo 2D idle para desktop que também funciona como papel de parede animado. O j
 
 ## Estado atual
 
-**Etapa 3 de 12 — Cenário principal.** O quintal definitivo já é o fundo do jogo, com área caminhável, pontos de interação e camadas preparadas para as próximas etapas. **Ainda não há cachorro nem jogabilidade.**
+**Etapa 4 de 12 — Controlador de Caramelo.** O quintal tem um cachorro: ele fica ocioso, escolhe destinos, caminha até eles e descansa, sempre dentro da área caminhável. A máquina de estados completa já existe. **Ainda não há jogabilidade:** sem atributos, sem progressão, sem alimentação ou treino de verdade e sem interface.
 
 ## Requisitos
 
@@ -117,7 +117,139 @@ As três camadas estão vazias nesta etapa, como previsto.
 
 O `Background` é um `Sprite2D`, e não um `TextureRect`: um `Sprite2D` não participa da captura de eventos de mouse, então o fundo nunca intercepta cliques destinados às futuras entidades.
 
-## Estrutura da cena
+## Caramelo
+
+**A arte é provisória.** Não existe sprite de cachorro no projeto e esta etapa não podia criar assets externos, então Caramelo é montado com `Polygon2D` do próprio Godot: tronco, barriga, cabeça, focinho, nariz, olho, duas orelhas, coleira, rabo, quatro patas e uma sombra. São cerca de **143 × 88 px** no sistema de coordenadas-base, comparáveis à cadeira plástica do cenário. A silhueta será substituída por arte real na Etapa 5 — nada aqui pretende ser definitivo.
+
+A representação deixa perceber direção (o nó `Visual` espelha em X), parado, caminhando, descansando, comendo, treinando e a reação feliz.
+
+### Estrutura da cena
+
+```text
+Caramelo                (CharacterBody2D)   ← caramelo.gd
+├── Visual              (Node2D)            ← caramelo_visual.gd
+│   ├── Shadow          (Polygon2D)
+│   ├── Tail            (Node2D)   pivô na base do rabo
+│   │   └── TailShape   (Polygon2D)
+│   ├── LegsBack        (Node2D)   pivô no quadril
+│   │   ├── LegBackFar  (Polygon2D)   tom escuro: patas do lado oposto
+│   │   └── LegBackNear (Polygon2D)
+│   ├── Body            (Node2D)
+│   │   ├── Torso       (Polygon2D)
+│   │   └── Belly       (Polygon2D)
+│   ├── LegsFront       (Node2D)   pivô no ombro
+│   │   ├── LegFrontFar (Polygon2D)
+│   │   └── LegFrontNear(Polygon2D)
+│   ├── Collar          (Polygon2D)
+│   └── Head            (Node2D)   pivô no pescoço
+│       ├── EarFar · Skull · Muzzle · Nose · Eye · EarNear  (Polygon2D)
+└── CollisionShape2D    (CapsuleShape2D deitada, do tamanho do tronco)
+```
+
+A **origem do nó fica nas patas**, no chão. É ela que o polígono caminhável valida e também a chave de ordenação do `y_sort_enabled` de `CharacterLayer`.
+
+**Não há `AnimationPlayer`.** As poses são funções contínuas do tempo aplicadas a quatro pivôs (rabo, patas dianteiras, patas traseiras e cabeça) mais uma respiração em escala. Manter faixas de keyframes custaria um recurso que será descartado assim que a arte definitiva chegar, e funções contínuas sem sorteio garantem ausência de tremor. `Visual` só desenha: não conhece a área caminhável, não decide nada e não toca em atributo algum.
+
+### Estados
+
+Os seis estados do `MVP_SPEC.md` §10, no enum `Caramelo.State`. Não há strings de estado espalhadas pelo código.
+
+| Estado | Entrada | Duração / término | Interrompível | Movimento | Visual |
+| ------ | ------- | ----------------- | ------------- | --------- | ------ |
+| `IDLE` | Estado inicial; fim de qualquer outro | Espera sorteada de 2,5 a 6 s, ao fim da qual decide a próxima ação | Sim | Parado | Respiração leve, rabo lento |
+| `WALKING` | Ao receber um destino válido | Ao alcançar o destino | Sim — um novo comando substitui o destino | 130 px/s pelo trajeto | Balanço do corpo, patas alternadas, rabo no ritmo |
+| `EATING` | Ao chegar ao `FoodPoint` | 4 s (S-4) | **Não** | Parado | Cabeça abaixada ao chão, rabo rápido |
+| `TRAINING` | Ao chegar ao `TrainingPoint` | 6 s (marcador provisório) | **Não** | Parado | Corpo subindo e descendo |
+| `RESTING` | Comando, ou decisão autônoma | Sorteada de 7 a 14 s | Sim | Parado | Deita: encolhe até o chão, respiração ampla |
+| `HAPPY` | Fim de `EATING` ou `TRAINING`; comando | 2 s (S-4) | Sim | Parado | Pulinhos e rabo acelerado |
+
+Nenhum estado altera `energy`, `strength`, `bond` ou `level` — esses atributos não existem ainda. `EATING`, `TRAINING` e `HAPPY` rodam só o comportamento visual e terminam sozinhos, sem recompensa.
+
+As durações de comer e da reação feliz seguem a suposição **S-4** do `MVP_SPEC.md`. A do treino é um marcador: a duração real de cada exercício nasce de `data/exercises.json` na Etapa 5. **Nenhum valor aqui é balanceamento.**
+
+### Matriz de transições
+
+Reproduz literalmente o `MVP_SPEC.md` §10. Qualquer par fora dela é rejeitado explicitamente, com aviso — nunca tratado como caso especial silencioso.
+
+| De ↓ / Para → | `IDLE` | `WALKING` | `EATING` | `TRAINING` | `RESTING` | `HAPPY` |
+| ------------- | :----: | :-------: | :------: | :--------: | :-------: | :-----: |
+| `IDLE`        |   —    |     ✅    |    ✅    |     ✅     |    ✅     |   ✅    |
+| `WALKING`     |   ✅   |     —     |    ✅    |     ✅     |    ✅     |   ❌    |
+| `EATING`      |   ✅   |     ❌    |    —     |     ❌     |    ❌     |   ✅    |
+| `TRAINING`    |   ❌   |     ❌    |    ❌    |     —      |    ✅     |   ✅    |
+| `RESTING`     |   ✅   |     ❌    |    ✅    |     ✅     |    —      |   ❌    |
+| `HAPPY`       |   ✅   |     ❌    |    ❌    |     ❌     |    ✅     |   —     |
+
+### Regras de interrupção
+
+* `EATING` e `TRAINING` **não são interrompíveis**. Comandos recebidos durante eles são **descartados**, nunca enfileirados: quando a atividade termina, ela segue para o destino padrão (`HAPPY`), e não para o comando recusado.
+* Reentrar no estado atual é recusado em vez de reiniciar o estado — o cronômetro em curso não é zerado.
+* Uma transição rejeitada **não emite sinal**. Só transições aceitas emitem `state_changed(previous_state, new_state)`, exatamente uma vez cada.
+* As transições internas por fim de duração (por exemplo `EATING → HAPPY`) não passam por `request_state`: não são comandos, e por isso não são descartadas por si mesmas.
+
+### Comportamento autônomo
+
+Sem interação, Caramelo alterna apenas entre `IDLE`, `WALKING` e `RESTING`. Começa em `IDLE`.
+
+Ao fim de cada espera ociosa ele decide uma única vez — **nunca por quadro**, o que evita tremor e troca de estado frequente. A chance de caminhar é 72%; o resto é descansar. **Dois descansos seguidos são proibidos**, aplicando ao caso o princípio do `MVP_SPEC.md` §9 de não repetir o mesmo comportamento autônomo duas vezes em sequência. Medido em 20 sementes × 10 min: 22% de descansos e nenhuma sequência repetida, com troca de estado a cada ~9 s.
+
+Se nenhum destino válido for sorteado, ele simplesmente continua ocioso e tenta de novo depois.
+
+O gerador é um `RandomNumberGenerator` próprio, aleatorizado na abertura — o jogo entregue não fica preso a uma única sequência. `set_random_seed()` fixa a semente para os testes.
+
+### Movimento e integração com o polígono
+
+Caramelo recebe do ambiente a **área caminhável real**, não o retângulo envolvente.
+
+* Um ponto só vale se estiver dentro do polígono (`Geometry2D.is_point_in_polygon`) **e** a pelo menos **26 px** de qualquer aresta. Essa margem mantém as patas confortavelmente no piso e ainda deixa 80% da área do polígono utilizável (≈ 321 000 px² de 400 000).
+* O destino é validado **antes** de o movimento começar.
+* Como o polígono é côncavo, o **trajeto** também é validado: o segmento inteiro é amostrado a cada 24 px e cada amostra precisa ser válida. Sem isso, dois pontos válidos poderiam ser ligados por uma linha que sai da área.
+* Se a linha reta não serve, há um único desvio: um ponto interno seguro, o mais distante da borda, calculado por varredura em grade. Se nem essa rota de duas pernas serve, o destino é recusado e outro é sorteado. **Não há pathfinding** e nenhum `NavigationRegion2D` foi criado.
+* Ao chegar, a posição é **encaixada exatamente** no destino e a velocidade é zerada — sem ultrapassar e sem oscilar em volta do ponto.
+* O polígono do quintal **não foi alterado** para facilitar o movimento.
+
+Na prática o quintal é quase convexo: medindo 4 000 pares de pontos válidos, só **0,4%** dos trajetos diretos precisam do desvio.
+
+### Ordenação por profundidade
+
+`CharacterLayer` tem `y_sort_enabled`, e a origem de Caramelo fica nas patas — então quem está mais embaixo na tela desenha à frente. O `z_index` das camadas continua o da Etapa 3: fundo (−100) < personagens (0) < objetos (10) < primeiro plano (20).
+
+**Limitação:** a vegetação do primeiro plano continua pintada na imagem de fundo, ou seja, desenhada *atrás* de Caramelo. A área caminhável foi traçada acima dela justamente para que a sobreposição nunca aconteça. `ForegroundLayer` segue vazia, esperando um recorte dessa vegetação.
+
+### Como o quintal configura Caramelo
+
+Caramelo é instanciado dentro de `CharacterLayer`, em `backyard.tscn`, na posição `(880, 860)`.
+
+Quem conhece a geometria é o ambiente: `backyard.gd` converte o polígono e os três `Marker2D` para o espaço de coordenadas de `CharacterLayer` e os entrega a cada filho que responda aos métodos correspondentes. Foi a opção **"método explícito de inicialização"** entre as sugeridas.
+
+Assim Caramelo não procura nada por caminhos frágeis como `../../WorldBounds`, a checagem por `has_method` evita que o quintal dependa do tipo do personagem, e — por estar dentro de `Backyard` — ele herda automaticamente a escala uniforme aplicada pelo enquadramento, sem nenhum código extra.
+
+### API pública
+
+```gdscript
+signal state_changed(previous_state: int, new_state: int)
+
+func request_state(new_state: int) -> bool        # transição direta; false quando recusada
+func request_activity(activity: int) -> bool      # caminha até o ponto e só então entra na atividade
+func get_current_state() -> int
+func get_destination() -> Vector2                 # destino do trajeto; a própria posição se parado
+func is_interruptible() -> bool
+func set_random_seed(value: int) -> void
+func set_walkable_polygon(polygon: PackedVector2Array) -> void
+func set_interaction_points(food: Vector2, training: Vector2, rest: Vector2) -> void
+func simulate(delta: float) -> void
+static func state_name(state: int) -> String
+```
+
+`request_state` devolve `false` — sem emitir sinal — para estado inexistente, estado atual não interrompível, par ausente da matriz e reentrada no estado atual.
+
+`request_activity` existe porque o `MVP_SPEC.md` separa o deslocamento da atividade: o jogador escolhe a comida, Caramelo **caminha** até o pote e só ao chegar entra em `EATING`. Ela devolve `true` ao aceitar o comando, ainda que o estado imediato seja `WALKING`. Como a matriz não liga `RESTING` nem `HAPPY` a `WALKING`, nesses casos Caramelo primeiro se levanta (`→ IDLE`) e só então caminha — toda aresta percorrida continua válida.
+
+`simulate` é o corpo de `_physics_process`, exposto porque o `MVP_SPEC.md` §20 ("Testabilidade") exige durações aceleráveis: os testes simulam minutos de jogo em milissegundos sem esperar tempo real nem mexer em `Engine.time_scale`. A propriedade exportada `development_time_scale` atende ao mesmo requisito em execução normal e vale `1.0` no jogo entregue.
+
+**Não há `Timer`.** Os cronômetros de estado e de decisão são contadores internos avançados por `simulate`, porque nós `Timer` seguem o relógio do motor e não poderiam ser adiantados de forma determinística — o que inviabilizaria metade dos testes obrigatórios. Os papéis de `StateTimer` e `DecisionTimer` continuam existindo, como campos.
+
+## Estrutura da cena principal
 
 ```text
 Main                    (Node)
@@ -130,7 +262,8 @@ Main                    (Node)
 │       │   ├── FoodPoint     (Marker2D)
 │       │   ├── TrainingPoint (Marker2D)
 │       │   └── RestPoint     (Marker2D)
-│       ├── CharacterLayer    (Node2D)       z = 0
+│       ├── CharacterLayer    (Node2D)       z = 0, y_sort_enabled
+│       │   └── Caramelo      (instância de caramelo.tscn, em (880, 860))
 │       ├── PropsLayer        (Node2D)       z = 10
 │       └── ForegroundLayer   (Node2D)       z = 20
 └── Interface           (CanvasLayer, camada 1, vazia)
@@ -179,11 +312,49 @@ godot --headless --path . --import
 godot --headless --path . --quit-after 120
 ```
 
+## Como executar os testes
+
+Os testes são permanentes, rodam sem janela e não dependem de nenhum framework externo:
+
+```bash
+godot --headless --path . --script tests/test_caramelo_controller.gd
+```
+
+Saem com código `0` quando tudo passa e `1` na primeira falha, imprimindo cada verificação. São **69 verificações** cobrindo estado inicial, existência dos seis estados, transições válidas e inválidas, reentrada, não interrupção de `EATING` e `TRAINING`, descarte de comandos, sinais, destinos e trajetos dentro do polígono, parada no destino, reprodutibilidade por semente, acompanhamento da transformação do quintal e unicidade de Caramelo na cena principal.
+
+O tempo nunca é esperado de verdade: a suíte chama `Caramelo.simulate(delta)` em laço, de modo que dez minutos de jogo passam em milissegundos e o resultado é determinístico.
+
 O esperado é uma janela preenchida de ponta a ponta pelo quintal ao entardecer, sem barras vazias e sem deformação. Ao arrastar a borda da janela, a imagem continua cobrindo tudo: em janelas mais largas que 16:9 ela é recortada em cima e embaixo, e em janelas mais altas, nas laterais.
 
-## Como validar o cenário
+## Como validar visualmente
 
-Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sobre o piso. O que conferir:
+```bash
+godot --path . --resolution 1280x720 --position 60,60
+```
+
+Deixe rodando um ou dois minutos e observe Caramelo. O esperado:
+
+* Ele começa parado, respirando, virado para a direita.
+* De tempos em tempos escolhe um ponto do quintal e caminha até lá, virando o corpo conforme a direção.
+* Ao chegar, para de vez — sem deslizar nem tremer em volta do ponto.
+* De vez em quando deita para descansar e depois se levanta. Nunca dois descansos seguidos.
+* As patas ficam sempre no piso de concreto: ele não sobe no muro, no telhado nem entra na vegetação da frente.
+* Não há teletransporte: todo deslocamento é contínuo.
+
+Em outras proporções, confira que a escala dele acompanha o quintal:
+
+```bash
+godot --path . --resolution 1024x768 --position 60,60
+godot --path . --resolution 640x1000  --position 60,60
+```
+
+Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sobre o piso, o que deixa ver que Caramelo nunca o atravessa:
+
+```bash
+godot --path . --resolution 1280x720 --position 60,60 --debug-collisions
+```
+
+O que conferir no cenário:
 
 * O contorno acompanha o concreto e não invade telhado, céu, muros nem as plantas do primeiro plano.
 * Ele encosta na base da parede do fundo, sem sobrar faixa de piso inalcançável.
@@ -191,10 +362,14 @@ Com `--debug-collisions`, o polígono da área caminhável aparece desenhado sob
 
 ## O que foi implementado nesta etapa
 
-* `scenes/environment/backyard.tscn`: cena própria do ambiente, instanciável, com fundo definitivo, área caminhável, três pontos de interação e três camadas vazias.
-* `scripts/environment/backyard.gd`: 32 linhas que apenas encaixam o cenário no viewport preservando a proporção.
-* `scenes/main/main.tscn`: passa a instanciar o quintal dentro de `World`; `ColorRect` provisório removido.
-* Importação da imagem pelo Godot, com filtragem linear no `Background` (a arte é pintada, não pixel art — a filtragem *Nearest* padrão do projeto deixaria o redimensionamento serrilhado). O padrão do projeto não foi alterado, só o nó do fundo.
+* `scenes/dog/caramelo.tscn`: a cena do cachorro, com a silhueta provisória em `Polygon2D` e a cápsula de colisão.
+* `scripts/dog/caramelo.gd`: o controlador — máquina de estados, movimento dentro do polígono, decisões autônomas e API pública.
+* `scripts/dog/caramelo_visual.gd`: as poses, separadas da lógica.
+* `tests/test_caramelo_controller.gd`: 69 verificações permanentes, headless e determinísticas.
+* `scenes/environment/backyard.tscn`: instancia Caramelo em `CharacterLayer` e liga `y_sort_enabled` na camada.
+* `scripts/environment/backyard.gd`: passa a entregar aos personagens a área caminhável e os três pontos, convertidos para o espaço de `CharacterLayer`. O enquadramento da Etapa 3 não foi tocado.
+
+`scenes/main/main.tscn` não mudou: Caramelo entra pelo quintal, não pela cena principal.
 
 Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado pelo Git, enquanto `assets/backgrounds/quintal_mvp.png.import` é versionado. Esse arquivo guarda o `uid://` do recurso e os parâmetros de importação; versioná-lo é a prática recomendada no Godot 4 e evita que a referência da cena mude a cada clone.
 
@@ -206,6 +381,15 @@ Sobre os arquivos de importação: `.godot/` (o cache gerado) permanece ignorado
 * **Sem mipmaps.** Em janelas bem menores que 1672 px de largura a redução usa filtragem linear simples. Gerar mipmaps é uma otimização possível para a Etapa 12.
 * **Proporções extremas recortam muito.** Em 640 × 1000 sobram cerca de 35% da largura da arte. O recorte é centrado e previsível, mas boa parte do quintal fica fora da tela.
 * **Consumo não foi medido.** A máquina de desenvolvimento usa renderização por software (Mesa llvmpipe), inadequada para aferir as metas de FPS e CPU da seção 20 do `MVP_SPEC.md`. Isso fica para a Etapa 12, junto com a definição do computador de referência (ponto em aberto A-1).
+
+### Caramelo
+
+* **A arte é provisória e feita de formas geométricas.** É reconhecível como um vira-lata caramelo, mas não tem a expressividade que o `MVP_SPEC.md` §15 pede. Sprites reais chegam na Etapa 5.
+* **Só a forma inicial existe.** A forma musculosa (níveis 4–5) não foi tentada.
+* **O desvio de trajeto tem uma perna só.** Se nem a linha reta nem a rota pelo ponto interno servirem, o destino é recusado. Basta para este quintal, que é quase convexo (0,4% dos trajetos precisam do desvio), mas um cenário mais recortado exigiria outra solução.
+* **Caramelo não desvia de objetos.** O `CharacterBody2D` tem cápsula de colisão e `velocity`, mas a posição é integrada diretamente em vez de `move_and_slide()` — não existe nada com que colidir, e `move_and_slide()` usaria o delta do motor, o que quebraria a simulação determinística dos testes. Quando a Etapa 6 trouxer objetos com corpo, a troca é de uma linha.
+* **`EATING`, `TRAINING` e `HAPPY` não são jogabilidade.** Rodam o comportamento visual, respeitam as regras de interrupção e terminam sozinhos. Não concedem nada, porque não há atributos.
+* **Um único `TrainingPoint`.** Segue valendo a limitação da Etapa 3: a arte tem dois conjuntos de treino e Caramelo só conhece o da esquerda.
 
 ## Estrutura de diretórios
 
@@ -227,15 +411,16 @@ Diretórios ainda vazios contêm um `.gitkeep`, porque o Git não rastreia diret
 
 Nada de jogabilidade existe. Em particular, seguem pendentes:
 
-* Caramelo, suas animações e a máquina de estados (`IDLE`, `WALKING`, `EATING`, `TRAINING`, `RESTING`, `HAPPY`).
+* Arte definitiva de Caramelo e a forma musculosa dos níveis 4–5.
+* Os cinco comportamentos ociosos do `MVP_SPEC.md` §9 (sentar, alongar, farejar, perseguir mosca). Esta etapa entrega apenas ocioso, caminhada e descanso.
+* Carinho e os comportamentos afetivos por vínculo.
 * Objetos do cenário como entidades próprias — pote, halteres e barras ainda fazem parte da imagem de fundo.
 * Atributos (`energy`, `strength`, `bond`, `level`) e progressão de níveis.
-* Alimentação, exercícios e descanso.
+* Alimentação, exercícios e descanso com efeito de verdade.
 * Interface, barras e botões.
 * Salvamento local e progresso offline.
 * Modo papel de parede, modo silencioso e redução de consumo.
 * Áudio — habilitado tecnicamente, mas nenhum som é reproduzido.
 * Arquivos JSON de balanceamento em `data/`.
-* Testes permanentes.
 
 O roteiro completo está em [`PLANO_MVP.md`](PLANO_MVP.md).

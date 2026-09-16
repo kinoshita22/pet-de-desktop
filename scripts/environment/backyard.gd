@@ -17,10 +17,39 @@ extends Node2D
 
 const BASE_SIZE := Vector2(1920.0, 1080.0)
 
+@onready var _walkable: CollisionPolygon2D = $WorldBounds/WalkableCollision
+@onready var _character_layer: Node2D = $CharacterLayer
+@onready var _food_point: Marker2D = $InteractionPoints/FoodPoint
+@onready var _training_point: Marker2D = $InteractionPoints/TrainingPoint
+@onready var _rest_point: Marker2D = $InteractionPoints/RestPoint
+
 
 func _ready() -> void:
 	get_viewport().size_changed.connect(_fit_to_viewport)
 	_fit_to_viewport()
+	_configure_characters()
+
+
+## Entrega a cada personagem de `CharacterLayer` a area caminhavel e os tres pontos de
+## interacao, convertidos para o espaco de coordenadas do proprio `CharacterLayer`.
+##
+## O ambiente e quem conhece a geometria; o personagem apenas recebe. Assim Caramelo nao
+## precisa procurar nada com caminhos frageis do tipo `../../WorldBounds`, e a checagem
+## por `has_method` evita que o quintal dependa do tipo do personagem.
+func _configure_characters() -> void:
+	var to_layer := _character_layer.get_global_transform().affine_inverse()
+	var from_walkable := to_layer * _walkable.get_global_transform()
+	var polygon := PackedVector2Array()
+	for point in _walkable.polygon:
+		polygon.append(from_walkable * point)
+	for character in _character_layer.get_children():
+		if character.has_method("set_walkable_polygon"):
+			character.call("set_walkable_polygon", polygon)
+		if character.has_method("set_interaction_points"):
+			character.call("set_interaction_points",
+				to_layer * _food_point.global_position,
+				to_layer * _training_point.global_position,
+				to_layer * _rest_point.global_position)
 
 
 func _fit_to_viewport() -> void:

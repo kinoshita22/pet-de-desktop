@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/environment/backyard.gd" id="1_backyard"]
 [ext_resource type="Texture2D" uid="uid://b7ssquil7r7pt" path="res://assets/backgrounds/quintal_mvp.png" id="2_quintal"]
+[ext_resource type="PackedScene" path="res://scenes/dog/caramelo.tscn" id="3_caramelo"]
 
 [node name="Backyard" type="Node2D"]
 script = ExtResource("1_backyard")
@@ -34,6 +35,10 @@ position = Vector2(689, 746.1)
 position = Vector2(1217.2, 734.6)
 
 [node name="CharacterLayer" type="Node2D" parent="."]
+y_sort_enabled = true
+
+[node name="Caramelo" parent="CharacterLayer" instance=ExtResource("3_caramelo")]
+position = Vector2(880, 860)
 
 [node name="PropsLayer" type="Node2D" parent="."]
 z_index = 10
